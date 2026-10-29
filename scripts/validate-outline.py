@@ -19,6 +19,7 @@ A waived check is reported but never fails the run. Agents must not add waivers.
 
 import argparse
 import json
+import math
 import os
 import re
 import statistics
@@ -72,9 +73,10 @@ CLOCK_RE = re.compile(r"(\d{1,2}):(\d{2})")
 
 
 def norm(s):
+    """Accent-free, case-free spelling key; letters of every script are kept (Иван stays иван)."""
     s = unicodedata.normalize("NFKD", str(s))
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    return re.sub(r"[\W_]+", "-", s.casefold()).strip("-")
 
 
 def as_list(v):
@@ -98,16 +100,25 @@ def read(path):
     return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
 
 
+LOOKALIKE_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN"}
+
+
 def suspicious_name(name):
-    """Zero-width/format characters, or letters from more than one script (Latin 'E' vs Cyrillic 'Е')."""
+    """Invisible format characters, or look-alike alphabets mixed in one name (Latin 'E' vs Cyrillic 'Е').
+
+    Only Latin, Cyrillic, Greek and Armenian share look-alike letters; mixing other scripts is
+    normal writing (田中さくら mixes kanji and kana) and modifier letters like the ʻokina are fine.
+    """
     if any(unicodedata.category(ch) == "Cf" for ch in name):
         return "contains an invisible formatting character"
     scripts = set()
     for ch in name:
-        if ch.isalpha():
-            scripts.add(unicodedata.name(ch, "UNKNOWN").split()[0])
+        if ch.isalpha() and unicodedata.category(ch) != "Lm":
+            script = unicodedata.name(ch, "UNKNOWN").split()[0]
+            if script in LOOKALIKE_SCRIPTS:
+                scripts.add(script)
     if len(scripts) > 1:
-        return f"mixes letters from {', '.join(sorted(scripts))} scripts"
+        return f"mixes look-alike letters from {', '.join(sorted(scripts))} alphabets"
     return ""
 
 
@@ -155,10 +166,10 @@ def load_characters(bible):
         aka = re.search(r"^-\s*Also known as:\s*(.+)$", text, re.M | re.I)
         if aka:
             spellings.update(norm(a) for a in aka.group(1).split(",") if a.strip())
-        for s in spellings:
+        for s in spellings - {""}:
             names[s] = slug
     for first, slugs in firsts.items():
-        if len(slugs) == 1 and first not in names:
+        if first and len(slugs) == 1 and first not in names:
             names[first] = next(iter(slugs))
     return names, headings
 
@@ -276,9 +287,10 @@ def validate(book):
         elif ch is not None:
             rep.error("fields", f"chapter must be a whole number, got {ch!r}", sid)
         wt = s.get("word_target")
-        if isinstance(wt, bool) or not isinstance(wt, (int, float)) or wt <= 0:
+        if isinstance(wt, bool) or not isinstance(wt, (int, float)) or not math.isfinite(wt) or not 0 < wt <= 1e6:
             if wt is not None:
-                rep.error("fields", f"word_target must be a positive number, got {wt!r}", sid)
+                rep.error("fields", f"word_target must be a number of words between 1 and 1,000,000, got {wt!r}",
+                          sid)
             wt = 0
         s["_wt"] = wt
         total += wt
@@ -344,7 +356,8 @@ def validate(book):
         return [s for s in scenes if s["_beats"] & set(beats)]
 
     target = meta.get("target_words")
-    if isinstance(target, (int, float)) and target > 0 and total:
+    if isinstance(target, (int, float)) and not isinstance(target, bool) and math.isfinite(target) \
+            and target > 0 and total and math.isfinite(total):
         drift = (total - target) / target
         if abs(drift) > 0.15:
             rep.warn("length", f"scene word targets sum to {total:,} vs book target {int(target):,} ({drift:+.0%})", "book")

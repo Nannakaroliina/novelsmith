@@ -244,7 +244,7 @@ class ValidateOutline(unittest.TestCase):
     def test_lookalike_letters_in_names(self):
         (self.book / "bible/characters/elias-koski.md").write_text("# Еlias Koski\n", encoding="utf-8")
         out = self.assert_error("names")
-        self.assertTrue(any("mixes letters" in f["message"] for f in out["findings"]))
+        self.assertTrue(any("mixes look-alike letters" in f["message"] for f in out["findings"]))
         (self.book / "bible/characters/elias-koski.md").write_text("# Eli​as Koski\n", encoding="utf-8")
         out = self.assert_error("names")
         self.assertTrue(any("invisible" in f["message"] for f in out["findings"]))
@@ -258,6 +258,38 @@ class ValidateOutline(unittest.TestCase):
                            encoding="utf-8")
         code, out, _ = run(self.book)
         self.assertNotIn("names", checks(out))
+
+    def test_non_finite_word_targets_cannot_silence_placement(self):
+        self.replace(self.scenes, "beat: [climax, exposure]", 'beat: ""')
+        self.replace(self.scenes, 'beat: "doorway"', "beat: [climax, exposure]")
+        self.assert_error("climax_placement")
+        for bad in (".nan", ".inf", "1e308", "1.0e+308", "2000000"):
+            with self.subTest(bad=bad):
+                text = self.scenes.read_text(encoding="utf-8")
+                self.scenes.write_text(text.replace("word_target: 1500", f"word_target: {bad}", 1), encoding="utf-8")
+                code, out, err = run(self.book)
+                self.assertEqual(code, 1, err)
+                self.assertIn("fields", checks(out))
+                self.assertIn("climax_placement", checks(out))
+                self.scenes.write_text(text, encoding="utf-8")
+
+    def test_non_latin_names_must_have_sheets(self):
+        (self.book / "bible/characters/ivan-petrov.md").write_text("# Иван Петров\n", encoding="utf-8")
+        self.replace(self.scenes, "characters: [Häkkinen, Tuomas Lehto]", "characters: [Häkkinen, Иван Петров]")
+        code, out, _ = run(self.book)
+        self.assertNotIn("entities", checks(out))     # the real sheet matches
+        self.replace(self.scenes, "characters: [Häkkinen, Иван Петров]", "characters: [Häkkinen, Пётр]")
+        out = self.assert_error("entities")           # an unknown Cyrillic name no longer slips through
+        self.assertTrue(any("Пётр" in f["message"] for f in out["findings"]))
+
+    def test_normal_non_latin_names_are_not_suspicious(self):
+        for name in ("田中さくら", "Kaʻiulani", "Ηλέκτρα", "Иван"):
+            with self.subTest(name=name):
+                slug = f"x{abs(hash(name)) % 1000}"
+                (self.book / f"bible/characters/{slug}.md").write_text(f"# {name}\n", encoding="utf-8")
+                code, out, _ = run(self.book)
+                self.assertNotIn("names", checks(out))
+                (self.book / f"bible/characters/{slug}.md").unlink()
 
     def test_late_compromise_ok_when_an_earlier_one_exists(self):
         self.replace(self.scenes, "flags: [open_thread]", "flags: [open_thread, compromise]")
