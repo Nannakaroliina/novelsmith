@@ -3,6 +3,9 @@
   "displayName": "Novelsmith",
   "version": "0.2.0",
   "description": "Outline-first, multi-agent novel writing. The book lives in a book/ tree of Markdown and YAML; specialist agents propose and write files there and stop at every stage boundary so the author decides.",
+  "author": { "name": "Nanna Setämaa" },
+  "license": "MIT",
+  "icon": "./assets/novelsmith-icon-512.png",
   "keywords": ["fiction", "novel", "writing", "outline", "mystery", "nordic-noir"],
   "userConfig": {
     "author_name": {
