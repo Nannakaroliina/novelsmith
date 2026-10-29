@@ -328,34 +328,88 @@ class MiniYaml(unittest.TestCase):
         self.assertEqual(data["scenes"][0]["id"], "ch01-s01")
         self.assertEqual(data["scenes"][0]["characters"], [])
 
+    # (text, what PyYAML's SafeLoader returns). Pinned so the fallback is checked on machines
+    # without PyYAML too; with PyYAML installed the live comparison below also runs.
     PARITY_CASES = [
-        "characters: [Siobhan O'Brien, Aino]\n",
-        "subplot: Aino's debt   # B story\n",
-        "turn: Aino's plan fails   # note: revisit\n",
-        "pov: O'Brien  # narrator\n",
-        "- 'quoted, with comma'\n- it's fine\n",
-        "a: ['x, y', \"z\"]\n",
-        "chapter: 08\n", "chapter: 010\n", "chapter: 0\n", "chapter: 1_000\n", "n: 0x1F\n", "n: 0b101\n",
-        "t: 12:30\n", "t: 1:20:30\n", "f: 1e4\n", "f: 1.5e+3\n", "f: .5\n", "f: -.inf\n", "f: 3.\n",
-        "b: no\n", "b: On\n", "b: YES\n", "b: off\n", "b: maybe\n",
-        "n: -12\n", "n: +7\n", "s: 2026-10-29x\n",
+        ("characters: [Siobhan O'Brien, Aino]\n", {"characters": ["Siobhan O'Brien", "Aino"]}),
+        ("subplot: Aino's debt   # B story\n", {"subplot": "Aino's debt"}),
+        ("turn: Aino's plan fails   # note: revisit\n", {"turn": "Aino's plan fails"}),
+        ("pov: O'Brien  # narrator\n", {"pov": "O'Brien"}),
+        ("- 'quoted, with comma'\n- it's fine\n", ["quoted, with comma", "it's fine"]),
+        ("a: ['x, y', \"z\"]\n", {"a": ["x, y", "z"]}),
+        ("chapter: 08\n", {"chapter": "08"}), ("chapter: 010\n", {"chapter": 8}), ("chapter: 0\n", {"chapter": 0}),
+        ("chapter: 1_000\n", {"chapter": 1000}), ("n: 0x1F\n", {"n": 31}), ("n: 0b101\n", {"n": 5}),
+        ("t: 12:30\n", {"t": 750}), ("t: 1:20:30\n", {"t": 4830}), ("f: 1e4\n", {"f": "1e4"}),
+        ("f: 1.5e+3\n", {"f": 1500.0}), ("f: .5\n", {"f": 0.5}), ("f: -.inf\n", {"f": float("-inf")}),
+        ("f: 3.\n", {"f": 3.0}),
+        ("b: no\n", {"b": False}), ("b: On\n", {"b": True}), ("b: YES\n", {"b": True}), ("b: off\n", {"b": False}),
+        ("b: maybe\n", {"b": "maybe"}),
+        ("n: -12\n", {"n": -12}), ("n: +7\n", {"n": 7}), ("s: 2026-10-29x\n", {"s": "2026-10-29x"}),
+        ("a: |\n  one\n# comment\nb: 2\n", {"a": "one\n", "b": 2}),
+        ("a: >\n  one\n  two\n\n  three\n", {"a": "one two\nthree\n"}),
+        ("a: |\n  # heading\n  text\n", {"a": "# heading\ntext\n"}),
+        ('s: "say \\"hi\\" #1"  # c\n', {"s": 'say "hi" #1'}),
+        ("a: >-\n  x\n  y\n", {"a": "x y"}),
     ]
 
-    def test_fallback_matches_pyyaml_on_tricky_scalars(self):
+    # The fallback refuses these; PyYAML reads them, so they are not silent disagreements.
+    FALLBACK_REFUSES = ['s: "\\x41"\n', 's: "\\e"\n', "- - a\n", "d: 2026-10-29\n", "a: |+\n  x\n",
+                        "a: >\n  x\n    more\n"]
+
+    # Both paths must refuse these with YAMLError (never another exception: the guard depends on it).
+    BOTH_REFUSE = ["a: &x [1]\nb: *x\n", "x: 0x_\n", "x: 0b_\n", "d: 2026-02-30\n", "? [a]\n: b\n",
+                   "x: " + "[" * 2000 + "]" * 2000 + "\n", "n: " + "9" * 5000 + "\n", "a: 1\na: 2\n"]
+
+    def test_fallback_matches_pinned_pyyaml_results(self):
+        for text, expected in self.PARITY_CASES:
+            with self.subTest(text=text):
+                self.assertEqual(ns_yaml._Parser(text).parse(), expected)
+
+    def test_fallback_matches_live_pyyaml(self):
         try:
             import yaml
         except ImportError:
             self.skipTest("PyYAML not installed")
-        for text in self.PARITY_CASES:
+        for text, expected in self.PARITY_CASES:
             with self.subTest(text=text):
-                self.assertEqual(ns_yaml._Parser(text).parse(), yaml.safe_load(text))
+                self.assertEqual(yaml.safe_load(text), expected)
 
-    def test_apostrophes_without_pyyaml(self):
-        p = lambda t: ns_yaml._Parser(t).parse()  # noqa: E731
-        self.assertEqual(p("characters: [Siobhan O'Brien, Aino]\n"), {"characters": ["Siobhan O'Brien", "Aino"]})
-        self.assertEqual(p("subplot: Aino's debt   # B story\n"), {"subplot": "Aino's debt"})
-        self.assertEqual(p("chapter: 08\n"), {"chapter": "08"})
-        self.assertEqual(p("b: no\n"), {"b": False})
+    def test_fallback_refuses_what_it_cannot_read(self):
+        for text in self.FALLBACK_REFUSES:
+            with self.subTest(text=text):
+                with self.assertRaises(ns_yaml.YAMLError):
+                    ns_yaml._Parser(text).parse()
+
+    def test_load_refuses_with_yamlerror_only(self):
+        for forced in (False, True):
+            for text in self.BOTH_REFUSE:
+                with self.subTest(fallback=forced, text=text[:30]):
+                    old = ns_yaml._FORCE_FALLBACK
+                    ns_yaml._FORCE_FALLBACK = forced
+                    try:
+                        with self.assertRaises(ns_yaml.YAMLError):
+                            ns_yaml.load(text)
+                    finally:
+                        ns_yaml._FORCE_FALLBACK = old
+
+    def test_strict_loader(self):
+        if ns_yaml._pyyaml is None:
+            self.skipTest("PyYAML not installed")
+        self.assertEqual(ns_yaml.load("a: 1\nb: [x, y]\n"), {"a": 1, "b": ["x", "y"]})
+        for text in ("a: 1\na: 2\n", "a: &x 1\nb: *x\n", "? [a]\n: b\n"):
+            with self.subTest(text=text):
+                with self.assertRaises(ns_yaml.YAMLError):
+                    ns_yaml.load(text)
+
+    def test_pyyaml_errors_are_one_line_with_a_hint(self):
+        if ns_yaml._pyyaml is None:
+            self.skipTest("PyYAML not installed")
+        with self.assertRaises(ns_yaml.YAMLError) as cm:
+            ns_yaml.load("a: 1\nb: x: y\n")
+        message = str(cm.exception)
+        self.assertNotIn("\n", message)
+        self.assertIn("line 2", message)
+        self.assertIn("quote a value", message)
 
     def test_unquoted_colon_rejected_like_pyyaml(self):
         with self.assertRaises(ns_yaml.YAMLError) as cm:

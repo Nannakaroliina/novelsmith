@@ -5,15 +5,28 @@ the templates use: block mappings and sequences, flow lists and maps on one line
 quoted and plain scalars, numbers, booleans, null, and | / > block scalars.
 Anything outside that subset raises YAMLError with a line number, so the author
 learns to install PyYAML rather than getting a silently wrong manifest.
+
+Both paths refuse what book files never need and an adversarial writer could
+abuse: anchors and aliases (exponential "alias bombs"), duplicate keys,
+non-scalar keys and nesting deeper than MAX_DEPTH. Every failure, including a
+parser crash on a strange value, surfaces as YAMLError, never as another
+exception; the canon guard relies on that to deny instead of failing open.
+
+Set NOVELSMITH_YAML=fallback to use the built-in parser even when PyYAML is installed.
 """
 
 import json
+import os
 import re
 
 try:
     import yaml as _pyyaml
 except ImportError:  # pragma: no cover - depends on the machine
     _pyyaml = None
+
+MAX_DEPTH = 64
+_FORCE_FALLBACK = os.environ.get("NOVELSMITH_YAML") == "fallback"
+_CRASHES = (ValueError, TypeError, OverflowError, RecursionError, MemoryError)
 
 
 class YAMLError(ValueError):
@@ -24,12 +37,35 @@ class YAMLError(ValueError):
 
 if _pyyaml is not None:
     class _StrictLoader(_pyyaml.SafeLoader):
-        """SafeLoader that refuses duplicate keys (plain PyYAML silently keeps the last one)."""
+        """SafeLoader without anchors, aliases, duplicate or non-scalar keys, or deep nesting."""
+
+        _depth = 0
+
+        def compose_node(self, parent, index):
+            event = self.peek_event()
+            if isinstance(event, _pyyaml.AliasEvent) or getattr(event, "anchor", None):
+                raise _pyyaml.composer.ComposerError(
+                    None, None, "anchors (&name) and aliases (*name) are not allowed in book files",
+                    event.start_mark)
+            self._depth += 1
+            try:
+                if self._depth > MAX_DEPTH:
+                    raise _pyyaml.composer.ComposerError(
+                        None, None, f"nested more than {MAX_DEPTH} levels deep", event.start_mark)
+                return super().compose_node(parent, index)
+            finally:
+                self._depth -= 1
 
         def construct_mapping(self, node, deep=False):
             seen = set()
             for key_node, _ in node.value:
                 key = self.construct_object(key_node, deep=deep)
+                try:
+                    hash(key)
+                except TypeError:
+                    raise _pyyaml.constructor.ConstructorError(
+                        None, None, "a key must be a plain value, not a list or mapping",
+                        key_node.start_mark) from None
                 if key in seen:
                     raise _pyyaml.constructor.ConstructorError(
                         None, None, f"duplicate key {key!r}", key_node.start_mark)
@@ -37,14 +73,31 @@ if _pyyaml is not None:
             return super().construct_mapping(node, deep=deep)
 
 
+def _describe(exc):
+    """One line from a PyYAML error: the problem, its context, and a fix hint where there is one."""
+    problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+    context = getattr(exc, "context", None)
+    message = f"{problem} ({context})" if context else problem
+    if "mapping values are not allowed" in problem:
+        message += "; quote a value that contains ': '"
+    return message
+
+
 def load(text):
-    if _pyyaml is not None:
+    if _pyyaml is not None and not _FORCE_FALLBACK:
         try:
             return _pyyaml.load(text, Loader=_StrictLoader)
         except _pyyaml.YAMLError as exc:
             mark = getattr(exc, "problem_mark", None)
-            raise YAMLError(str(exc), mark.line + 1 if mark else None) from exc
-    return _Parser(text).parse()
+            raise YAMLError(_describe(exc), mark.line + 1 if mark else None) from exc
+        except _CRASHES as exc:
+            raise YAMLError(f"cannot read a value ({type(exc).__name__}: {exc})") from exc
+    try:
+        return _Parser(text).parse()
+    except YAMLError:
+        raise
+    except _CRASHES as exc:
+        raise YAMLError(f"cannot read a value ({type(exc).__name__}: {exc})") from exc
 
 
 # YAML 1.1 implicit types, as PyYAML's SafeLoader resolves them.
@@ -60,6 +113,12 @@ _FLOAT = re.compile(r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
                      |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
                      |[-+]?\.(?:inf|Inf|INF)
                      |\.(?:nan|NaN|NAN))$""", re.X)
+
+
+_TIMESTAMP = re.compile(r"""^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]
+                         |[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?
+                          (?:[Tt]|[ \t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?
+                          (?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)$""", re.X)
 
 
 def _sexagesimal(s, cast):
@@ -103,10 +162,14 @@ def _opens_quote(prev):
 
 def _strip_comment(s):
     """Drop a trailing # comment that is outside quotes."""
-    quote, prev = None, None
+    quote, prev, escaped = None, None, False
     for i, ch in enumerate(s):
         if quote:
-            if ch == quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
                 quote = None
         elif ch in "\"'" and _opens_quote(prev):
             quote = ch
@@ -119,11 +182,15 @@ def _strip_comment(s):
 
 def _split_top(s, sep):
     """Split on sep outside quotes and brackets."""
-    parts, depth, quote, cur, prev = [], 0, None, [], None
+    parts, depth, quote, cur, prev, escaped = [], 0, None, [], None, False
     for ch in s:
         if quote:
             cur.append(ch)
-            if ch == quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
                 quote = None
             prev = ch
             continue
@@ -191,9 +258,13 @@ def _scalar(raw, line):
         if not s.endswith('"') or len(s) < 2:
             raise YAMLError("unterminated double-quoted string", line)
         try:
-            return json.loads(s)
+            value = json.loads(s)
         except ValueError:
-            return s[1:-1]
+            raise YAMLError("this double-quoted string uses an escape the built-in parser cannot read; "
+                            "use single quotes or install PyYAML", line) from None
+        if not isinstance(value, str):
+            raise YAMLError("unterminated double-quoted string", line)
+        return value
     if s[0] == "'":
         if not s.endswith("'") or len(s) < 2:
             raise YAMLError("unterminated single-quoted string", line)
@@ -206,10 +277,14 @@ def _scalar(raw, line):
         return _to_int(s)
     if _FLOAT.match(s):
         return _to_float(s)
-    if s[0] in "&*!%@`":
+    if s[0] in "&*":
+        raise YAMLError("anchors (&name) and aliases (*name) are not allowed in book files", line)
+    if s[0] in "!%@`":
         raise YAMLError(f"YAML feature {s[0]!r} needs PyYAML (pip install pyyaml)", line)
     if ": " in s or s.endswith(":"):
         raise YAMLError("mapping values are not allowed here; quote a value that contains ': '", line)
+    if _TIMESTAMP.match(s):
+        raise YAMLError(f"quote dates and times, e.g. \"{s}\" (PyYAML would read this as a date)", line)
     return s
 
 
@@ -244,14 +319,22 @@ class _Parser:
             raise YAMLError("unexpected indentation", rest[0])
         return value
 
+    _depth = 0
+
     def _block(self, indent):
         line = self._peek()
-        if line[2] == "-" or line[2].startswith("- "):
-            return self._seq(indent)
-        if _key_split(line[2]) is not None:
-            return self._map(indent)
-        self.i += 1
-        return _scalar(line[2], line[0])
+        self._depth += 1
+        try:
+            if self._depth > MAX_DEPTH:
+                raise YAMLError(f"nested more than {MAX_DEPTH} levels deep", line[0])
+            if line[2] == "-" or line[2].startswith("- "):
+                return self._seq(indent)
+            if _key_split(line[2]) is not None:
+                return self._map(indent)
+            self.i += 1
+            return _scalar(line[2], line[0])
+        finally:
+            self._depth -= 1
 
     def _seq(self, indent):
         out = []
@@ -261,6 +344,9 @@ class _Parser:
                 break
             n, _, content, raw = line
             item = content[1:].strip()
+            if item == "-" or item.startswith("- "):
+                raise YAMLError("a list inside a list on one line ('- - x') needs PyYAML; "
+                                "put the inner list on its own indented lines", n)
             if item == "":
                 self.i += 1
                 nxt = self._peek()
@@ -308,18 +394,41 @@ class _Parser:
         return out
 
     def _block_scalar(self, indent, header, lineno):
-        folded = header[0] == ">"
-        chomp = header[1:].strip()
+        """| and > scalars, read from the raw lines: a '#' inside the block is text, not a comment."""
+        if header.strip() not in ("|", "|-", ">", ">-"):
+            raise YAMLError(f"block scalar header {header.strip()!r} needs PyYAML; use | or > (optionally with -)",
+                            lineno)
+        folded, strip = header[0] == ">", header.strip().endswith("-")
         body, block_indent = [], None
         while self.i < len(self.lines):
-            n, ind, content, raw = self.lines[self.i]
-            if ind is not None and ind <= indent:
-                break
-            if ind is not None and block_indent is None:
-                block_indent = ind
-            body.append(raw[block_indent:] if block_indent is not None and raw.strip() else "")
+            n, _, _, raw = self.lines[self.i]
+            if raw.strip():
+                raw_indent = len(raw) - len(raw.lstrip())
+                if raw_indent <= indent:
+                    break
+                if block_indent is None:
+                    block_indent = raw_indent
+                elif raw_indent < block_indent:
+                    raise YAMLError("a line in this block is less indented than its first line", n)
+                line = raw[block_indent:]
+                if folded and line[:1] in (" ", "\t"):
+                    raise YAMLError("more-indented lines inside a > block need PyYAML; use |", n)
+                body.append(line)
+            else:
+                body.append("")
             self.i += 1
         while body and body[-1] == "":
             body.pop()
-        text = " ".join(body) if folded else "\n".join(body)
-        return text if chomp == "-" else text + "\n"
+        if not body:
+            return ""
+        if folded:
+            text, blanks = "", 0
+            for line in body:
+                if line == "":
+                    blanks += 1
+                    continue
+                text = line if not text and not blanks else text + ("\n" * blanks if blanks else " ") + line
+                blanks = 0
+        else:
+            text = "\n".join(body)
+        return text if strip else text + "\n"
