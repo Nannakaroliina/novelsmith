@@ -32,34 +32,92 @@ def load(text):
     return _Parser(text).parse()
 
 
-_INT = re.compile(r"^[-+]?\d+$")
-_FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+|\d+)([eE][-+]?\d+)?$")
+# YAML 1.1 implicit types, as PyYAML's SafeLoader resolves them.
+_BOOLS = {v: True for v in ("yes", "Yes", "YES", "true", "True", "TRUE", "on", "On", "ON")}
+_BOOLS.update({v: False for v in ("no", "No", "NO", "false", "False", "FALSE", "off", "Off", "OFF")})
+_INT = re.compile(r"""^(?:[-+]?0b[0-1_]+
+                   |[-+]?0[0-7_]+
+                   |[-+]?(?:0|[1-9][0-9_]*)
+                   |[-+]?0x[0-9a-fA-F_]+
+                   |[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$""", re.X)
+_FLOAT = re.compile(r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
+                     |\.[0-9_]+(?:[eE][-+][0-9]+)?
+                     |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
+                     |[-+]?\.(?:inf|Inf|INF)
+                     |\.(?:nan|NaN|NAN))$""", re.X)
+
+
+def _sexagesimal(s, cast):
+    sign = -1 if s[0] == "-" else 1
+    value = 0
+    for part in s.lstrip("+-").split(":"):
+        value = value * 60 + cast(part)
+    return sign * value
+
+
+def _to_int(s):
+    s = s.replace("_", "")
+    sign, body = (-1, s[1:]) if s[0] == "-" else (1, s.lstrip("+"))
+    if body.startswith("0b"):
+        return sign * int(body[2:], 2)
+    if body.startswith("0x"):
+        return sign * int(body[2:], 16)
+    if ":" in body:
+        return sign * _sexagesimal(body, int)
+    if len(body) > 1 and body[0] == "0":
+        return sign * int(body, 8)
+    return sign * int(body)
+
+
+def _to_float(s):
+    s = s.replace("_", "")
+    low = s.lower()
+    if low.endswith(".inf"):
+        return float("-inf") if s[0] == "-" else float("inf")
+    if low == ".nan":
+        return float("nan")
+    if ":" in s:
+        return _sexagesimal(s, float)
+    return float(s)
+
+
+def _opens_quote(prev):
+    """A quote character starts a quoted scalar only where a value can start."""
+    return prev is None or prev in ":-[{,?"
 
 
 def _strip_comment(s):
     """Drop a trailing # comment that is outside quotes."""
-    quote = None
+    quote, prev = None, None
     for i, ch in enumerate(s):
         if quote:
             if ch == quote:
                 quote = None
-        elif ch in "\"'":
+        elif ch in "\"'" and _opens_quote(prev):
             quote = ch
         elif ch == "#" and (i == 0 or s[i - 1] in " \t"):
             return s[:i].rstrip()
+        if ch not in " \t":
+            prev = ch
     return s.rstrip()
 
 
 def _split_top(s, sep):
     """Split on sep outside quotes and brackets."""
-    parts, depth, quote, cur = [], 0, None, []
+    parts, depth, quote, cur, prev = [], 0, None, [], None
     for ch in s:
         if quote:
             cur.append(ch)
             if ch == quote:
                 quote = None
+            prev = ch
             continue
-        if ch in "\"'":
+        if ch not in " \t":
+            was, prev = prev, ch
+        else:
+            cur.append(ch)
+            continue
+        if ch in "\"'" and _opens_quote(was):
             quote = ch
         elif ch in "[{":
             depth += 1
@@ -127,14 +185,12 @@ def _scalar(raw, line):
         return s[1:-1].replace("''", "'")
     if s in ("~", "null", "Null", "NULL"):
         return None
-    if s in ("true", "True", "TRUE"):
-        return True
-    if s in ("false", "False", "FALSE"):
-        return False
+    if s in _BOOLS:
+        return _BOOLS[s]
     if _INT.match(s):
-        return int(s)
+        return _to_int(s)
     if _FLOAT.match(s):
-        return float(s)
+        return _to_float(s)
     if s[0] in "&*!%@`":
         raise YAMLError(f"YAML feature {s[0]!r} needs PyYAML (pip install pyyaml)", line)
     if ": " in s or s.endswith(":"):

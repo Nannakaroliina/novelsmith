@@ -196,6 +196,35 @@ class MiniYaml(unittest.TestCase):
         self.assertEqual(data["scenes"][0]["id"], "ch01-s01")
         self.assertEqual(data["scenes"][0]["characters"], [])
 
+    PARITY_CASES = [
+        "characters: [Siobhan O'Brien, Aino]\n",
+        "subplot: Aino's debt   # B story\n",
+        "turn: Aino's plan fails   # note: revisit\n",
+        "pov: O'Brien  # narrator\n",
+        "- 'quoted, with comma'\n- it's fine\n",
+        "a: ['x, y', \"z\"]\n",
+        "chapter: 08\n", "chapter: 010\n", "chapter: 0\n", "chapter: 1_000\n", "n: 0x1F\n", "n: 0b101\n",
+        "t: 12:30\n", "t: 1:20:30\n", "f: 1e4\n", "f: 1.5e+3\n", "f: .5\n", "f: -.inf\n", "f: 3.\n",
+        "b: no\n", "b: On\n", "b: YES\n", "b: off\n", "b: maybe\n",
+        "n: -12\n", "n: +7\n", "s: 2026-10-29x\n",
+    ]
+
+    def test_fallback_matches_pyyaml_on_tricky_scalars(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML not installed")
+        for text in self.PARITY_CASES:
+            with self.subTest(text=text):
+                self.assertEqual(ns_yaml._Parser(text).parse(), yaml.safe_load(text))
+
+    def test_apostrophes_without_pyyaml(self):
+        p = lambda t: ns_yaml._Parser(t).parse()  # noqa: E731
+        self.assertEqual(p("characters: [Siobhan O'Brien, Aino]\n"), {"characters": ["Siobhan O'Brien", "Aino"]})
+        self.assertEqual(p("subplot: Aino's debt   # B story\n"), {"subplot": "Aino's debt"})
+        self.assertEqual(p("chapter: 08\n"), {"chapter": "08"})
+        self.assertEqual(p("b: no\n"), {"b": False})
+
     def test_unquoted_colon_rejected_like_pyyaml(self):
         with self.assertRaises(ns_yaml.YAMLError) as cm:
             ns_yaml._Parser("outcome: no-and: the key is gone\n").parse()
