@@ -1,0 +1,26 @@
+{
+  "name": "novelsmith",
+  "displayName": "Novelsmith",
+  "version": "0.2.0",
+  "description": "Outline-first, multi-agent novel writing. The book lives in a book/ tree of Markdown and YAML; specialist agents propose and write files there and stop at every stage boundary so the author decides.",
+  "keywords": ["fiction", "novel", "writing", "outline", "mystery", "nordic-noir"],
+  "userConfig": {
+    "author_name": {
+      "type": "string",
+      "title": "Author name",
+      "description": "Your name as it should appear in book/progress.md and the premise byline."
+    },
+    "default_genre": {
+      "type": "string",
+      "title": "Default genre",
+      "description": "Base genre offered when starting a new book, e.g. mystery.",
+      "default": "mystery"
+    },
+    "target_words": {
+      "type": "number",
+      "title": "Default target length (words)",
+      "description": "Target manuscript length offered when starting a new book.",
+      "default": 85000
+    }
+  }
+}

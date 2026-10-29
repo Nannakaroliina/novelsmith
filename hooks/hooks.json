@@ -1,0 +1,17 @@
+{
+  "description": "Canon guard: protects the author's anchored decisions and keeps each novelsmith agent writing only its own files under book/. Stays silent (allows the write) where python3 or the script is unavailable, so it never blocks writing; /novelsmith:doctor reports whether it is active.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 && [ -f \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\" ] || exit 0; python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

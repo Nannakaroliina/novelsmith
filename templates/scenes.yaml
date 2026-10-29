@@ -1,0 +1,46 @@
+# Scene manifest — the single source of truth for what gets drafted.
+# scripts/validate-outline.py rejects any scene missing pov/goal/conflict/turn/outcome/value_shift,
+# any pov or character without a sheet in book/bible/characters/, and any arc outline whose
+# required beats are missing or whose climax lands before 80%.
+# status: planned | drafted | revised | locked
+#
+# beat vocabulary (a string, or a list when one scene delivers two beats):
+#   hook · theme_stated · inciting · b_story · doorway · pinch_1 · midpoint · pinch_2 ·
+#   all_is_lost · dark_night · break_into_three · climax · resolution
+#   mystery: inciting_crime · false_solution · collapse · exposure · denouement
+# flags vocabulary (any number, optional; the validator looks for each at least once):
+#   compromise                  the protagonist lies, betrays or does harm (not redeemed in the same chapter)
+#   non_protagonist_resolution  a thread is resolved by someone or something other than the protagonist
+#   open_thread                 this scene's thread is left open at the end of the book
+#   nonlinear                   flashback, time jump, framing device, or document scene
+#   sequel                      a deliberate reaction/dilemma/decision scene
+
+book:
+  title: ""
+  target_words: 85000
+  base_genre: ""
+  structure: arc          # arc | kishotenketsu | alison  (non-arc models skip the beat checks)
+  waivers: {}             # AUTHOR ONLY. check-id: "reason", e.g. open_thread: "anchored closed ending"
+
+scenes:
+  - id: ch01-s01
+    chapter: 1
+    pov: ""
+    location: ""
+    time: ""              # story-day and clock, e.g. "Day 1, 06:40"
+    characters: []
+    goal: ""              # what the POV character wants in this scene
+    conflict: ""          # who or what opposes it
+    turn: ""              # the moment the character changes tactics or learns something
+    outcome: ""           # yes-but / no-and (never a plain yes or a plain no)
+    value_shift: ""       # "from X to Y", e.g. "from safety to exposure"
+    beat: ""              # structural beat this scene delivers, if any (vocabulary above)
+    subplot: ""
+    flags: []
+    word_target: 1800
+    status: planned
+    # mystery-only fields
+    clues_planted: []     # clue ids from book/bible/clues.md
+    clues_paid: []
+    red_herrings: []
+    suspect_lies: []      # "<character>: <the lie>"
