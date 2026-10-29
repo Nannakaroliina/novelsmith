@@ -182,6 +182,17 @@ class ValidateOutline(unittest.TestCase):
         self.assertNotIn("beats", checks(out))
         self.assertIn("structure", checks(out, "warning"))
 
+    def test_anchored_settings_win_over_earlier_lines(self):
+        premise = self.book / "bible/premise.md"
+        self.replace(premise, "## ⚓ Anchored\n", "## ⚓ Anchored\n- Structural model: arc\n- Base genre: mystery\n")
+        self.replace(premise, "- Base genre: mystery\n- Subgenre",
+                     "- Base genre: literary\n<!--\n- Structural model: kishotenketsu\n-->\n- Subgenre")
+        self.replace(self.scenes, "structure: arc", "structure: kishotenketsu")
+        self.replace(self.scenes, 'beat: "pinch_2"', 'beat: ""')
+        out = self.assert_error("book_meta")       # the manifest disagrees with the anchored model
+        self.assertIn("beats", checks(out))        # arc checks still run
+        self.assertTrue(out["stats"]["mystery"])   # the anchored genre, not the earlier line
+
     def test_structure_only_in_manifest_is_an_error(self):
         self.replace(self.scenes, "structure: arc", "structure: kishotenketsu")
         self.replace(self.scenes, 'beat: "pinch_2"', 'beat: ""')

@@ -223,8 +223,8 @@ def validate(book):
     # premise.md is the source of truth for genre and structure; scenes.yaml only mirrors them.
     premise = read(bible / "premise.md")
     anchored = ns_book.anchored_text(premise)
-    premise_genre = ns_book.field(premise, "Base genre").lower()
-    variant = ns_book.field(premise, "Subgenre / variant").lower()
+    premise_genre = ns_book.book_setting(premise, "Base genre").lower()
+    variant = ns_book.book_setting(premise, "Subgenre / variant").lower()
     manifest_genre = str(meta.get("base_genre") or "").strip().lower()
     if premise_genre and manifest_genre and manifest_genre != premise_genre:
         rep.error("book_meta", f"scenes.yaml base_genre {manifest_genre!r} differs from premise.md {premise_genre!r}", "book",
@@ -232,8 +232,8 @@ def validate(book):
     genre = premise_genre or manifest_genre
     is_mystery = any(w in genre for w in MYSTERY_WORDS)
     is_nordic = is_mystery and any(w in genre + " " + variant for w in NORDIC_WORDS)
-    premise_structure = tag(ns_book.field(premise, "Structural model").split(" ")[0]) if ns_book.field(
-        premise, "Structural model") else ""
+    declared = ns_book.book_setting(premise, "Structural model")
+    premise_structure = tag(declared.split(" ")[0]) if declared else ""
     manifest_structure = tag(meta.get("structure") or "")
     structure = premise_structure or "arc"
     if premise_structure and premise_structure not in STRUCTURES:

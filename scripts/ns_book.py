@@ -55,6 +55,14 @@ def section(md, heading_pattern):
     return rest[: nxt.start()] if nxt else rest
 
 
+BOOK_SETTINGS = ("Base genre", "Subgenre / variant", "Structural model")
+
+
+def book_setting(premise, label):
+    """A premise.md setting: the author's ⚓ sections win; otherwise the visible (comment-free) text."""
+    return field(anchored_text(premise), label) or field(strip_html_comments(premise), label)
+
+
 def field(md, label):
     """Value of a '- Label: value' line, ignoring template placeholders like '(e.g. …)' and '{{x}}'."""
     m = re.search(r"^[ \t]*[-*]?[ \t]*" + re.escape(label) + r"[ \t]*:[ \t]*(\S.*)$", md, re.M | re.I)

@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
-"""PreToolUse guard for Write/Edit/MultiEdit under book/, and Bash for novelsmith agents.
+"""PreToolUse guard for Write/Edit/MultiEdit and Bash in a novelsmith book project.
 
 Rules, enforced here because plugin agents cannot carry their own hooks:
 
-1. Author-owned regions: every heading containing ⚓ (with its body, HTML
-   comments included) in any book file, and book.waivers in
-   outline/scenes.yaml. A subagent changing one is denied; in the main
-   conversation the author is asked to confirm.
-2. Write scopes: each novelsmith agent may write only its own files
-   (AGENT_SCOPES); a novelsmith agent missing from AGENT_SCOPES may write
-   nothing under book/. Any other subagent may not write under book/bible/.
+1. Author-owned text: every heading containing ⚓ (with its body, HTML comments
+   included) in any book file, book.waivers in outline/scenes.yaml, and the
+   genre/structure settings of bible/premise.md. A subagent changing one is
+   denied; in the main conversation the author is asked to confirm.
+2. Write scopes: each novelsmith agent may write only its own files under
+   book/ (AGENT_SCOPES) and nothing outside book/; a novelsmith agent missing
+   from AGENT_SCOPES may write nothing. Any other subagent may not write under
+   book/bible/.
 3. Shell: a novelsmith agent may run exactly one command, the outline
-   validator; any other Bash call is denied (shell writes would skip rules 1-2).
+   validator. Other subagents may not run shell commands that touch book/.
+   In the main conversation the author is asked before inline code
+   (python3 -c, sh -c, …) or a shell command that could change book/.
+   (Shell writes would otherwise skip rules 1-2.)
 
 Paths are compared case-insensitively, because macOS and Windows treat
 book/Bible and book/bible as the same folder.
 
 Reads the hook input JSON on stdin; prints a hookSpecificOutput decision or nothing.
-Fails open (exit 1, non-blocking) on its own errors so a bug never locks the author out.
+If the guard itself fails, a subagent's call is denied (it cannot be checked);
+the main conversation fails open (exit 1, non-blocking) so a bug never locks
+the author out.
 """
 
 import fnmatch
@@ -42,8 +48,18 @@ AGENT_SCOPES = {
 }
 CANON = ["bible/*"]
 SCENES = "outline/scenes.yaml"
+PREMISE = "bible/premise.md"
 VALIDATOR = HERE / "validate-outline.py"
+SELFCHECK = HERE / "selfcheck.py"
+WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
 SHELL_META = re.compile(r"[;&|<>$`\\\n\r(){}*?!~]")
+OPERATORS = {";", "&&", "||", "|", "&", "(", ")"}
+REDIRECTS = re.compile(r"^\d*(>>?|<>|>&|&>|<<<?|<)")
+INTERPRETER = re.compile(r"^(python[0-9.]*|perl|ruby|node|deno|bun|php|osascript|sh|bash|zsh|dash|fish|ksh)$")
+INLINE_FLAGS = {"-c", "-e", "-E", "--eval", "-", "-r"}
+READ_ONLY = {"ls", "cat", "head", "tail", "wc", "grep", "egrep", "rg", "stat", "file", "less", "more", "diff",
+             "tree", "du", "pwd", "true", "cd"}
+READ_ONLY_GIT = {"status", "diff", "log", "show", "ls-files", "blame"}
 
 
 def fold(s):
@@ -83,9 +99,27 @@ def apply_edits(old, tool, inp):
     return new, exact
 
 
+def new_strings(tool, inp):
+    if tool == "Write":
+        return [inp.get("content", "")]
+    edits = inp.get("edits") if tool == "MultiEdit" else [inp]
+    return [e.get("new_string", "") for e in edits or []]
+
+
 def anchors(text):
     """Comparable form of every ⚓ section: heading plus whitespace-normalised body, comments kept."""
     return [(" ".join(h.split()), " ".join(body.split())) for h, body in ns_book.anchored_sections(text)]
+
+
+def visible_anchors(text):
+    """The same, as the author sees it: a ⚓ section wrapped in a comment disappears from this view."""
+    return anchors(ns_book.strip_html_comments(text))
+
+
+def setting(premise, label):
+    """A premise setting as the validator reads it; the structural model is its first word."""
+    value = fold(ns_book.book_setting(premise, label))
+    return value.split(" ")[0] if label == "Structural model" else " ".join(value.split())
 
 
 def has_content(sections):
@@ -108,12 +142,12 @@ def waivers_of(text):
         return {}, None
     try:
         data = ns_yaml.load(text)
-    except ns_yaml.YAMLError as exc:
-        return None, f"does not parse ({exc})"
-    if not isinstance(data, dict):
-        return None, "is not a mapping"
-    if stray_waivers(data):
-        return None, "has a 'waivers' key outside book"
+        if not isinstance(data, dict):
+            return None, "is not a mapping"
+        if stray_waivers(data):
+            return None, "has a 'waivers' key outside book"
+    except Exception as exc:  # any failure means the waivers cannot be checked
+        return None, f"cannot be read safely ({exc})"
     book = data.get("book") or {}
     if not isinstance(book, dict):
         return None, "has a 'book' that is not a mapping"
@@ -129,52 +163,146 @@ def decide(decision, reason):
     return 0
 
 
-def is_validator_command(command, cwd):
-    """True only for: python3 <this plugin's validate-outline.py> --book <dir> [--json]."""
+def is_script_command(command, cwd, script, extra):
+    """True only for: python3 <this plugin's script> <extra args>, with no other shell syntax."""
     if SHELL_META.search(command):
         return False
     try:
         argv = shlex.split(command)
     except ValueError:
         return False
-    if len(argv) not in (4, 5) or argv[0] != "python3" or argv[2] != "--book":
+    if len(argv) < 2 or argv[0] != "python3" or not extra(argv[2:]):
         return False
-    if len(argv) == 5 and argv[4] != "--json":
-        return False
-    script = Path(argv[1]) if os.path.isabs(argv[1]) else cwd / argv[1]
+    target = Path(argv[1]) if os.path.isabs(argv[1]) else cwd / argv[1]
     try:
-        return script.resolve().samefile(VALIDATOR)
+        return target.resolve().samefile(script)
     except OSError:
         return False
 
 
-def main():
-    data = json.load(sys.stdin)
+def is_validator_command(command, cwd):
+    return is_script_command(command, cwd, VALIDATOR,
+                             lambda a: a[:1] == ["--book"] and len(a) in (2, 3) and a[2:] in ([], ["--json"]))
+
+
+def is_selfcheck_command(command, cwd):
+    return is_script_command(command, cwd, SELFCHECK, lambda a: a == [])
+
+
+def shell_words(command):
+    """Shell words with operators split out; a rough fallback when the command does not tokenize."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return re.split(r"\s+|(?=[;&|<>()])|(?<=[;&|<>()])", command)
+
+
+def segments(words):
+    seg = []
+    for w in words:
+        if w in OPERATORS:
+            if seg:
+                yield seg
+            seg = []
+        else:
+            seg.append(w)
+    if seg:
+        yield seg
+
+
+def touches_book(words, cwd, book_root):
+    if book_relative(cwd.resolve(), book_root.resolve()) is not None:
+        return True
+    for w in words:
+        for part in w.split("="):
+            p = fold(part.strip("'\""))
+            if re.search(r"(^|/)book(/|$)", p):
+                return True
+            if part and (os.path.isabs(part) or "/" in part):
+                target = Path(part) if os.path.isabs(part) else cwd / part
+                if book_relative(target.resolve(), book_root.resolve()) is not None:
+                    return True
+    return False
+
+
+def runs_inline_code(words):
+    for seg in segments(words):
+        if INTERPRETER.match(os.path.basename(seg[0])) and any(a in INLINE_FLAGS for a in seg[1:]):
+            return True
+        if "<<" in seg or "<<<" in seg:
+            return True
+    return False
+
+
+def read_only(words):
+    if any(REDIRECTS.match(w) for w in words):
+        return False
+    for seg in segments(words):
+        cmd = os.path.basename(seg[0])
+        if cmd == "git":
+            if len(seg) < 2 or seg[1] not in READ_ONLY_GIT:
+                return False
+        elif cmd == "find":
+            if any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprintf", "-fls")
+                   for a in seg[1:]):
+                return False
+        elif cmd not in READ_ONLY:
+            return False
+    return True
+
+
+def check_bash(command, agent, ours, short, cwd, book_root):
+    if ours:
+        if not is_validator_command(command, cwd):
+            return decide("deny", f"novelsmith: {short} may run only the outline validator "
+                                  f"(python3 \"{VALIDATOR}\" --book book [--json]) with no other shell syntax. "
+                                  f"Use the Write and Edit tools for files.")
+        return 0
+    if not book_root.is_dir() or is_validator_command(command, cwd) or is_selfcheck_command(command, cwd):
+        return 0
+    words = shell_words(command)
+    touches = touches_book(words, cwd, book_root)
+    if agent:
+        if touches:
+            return decide("deny", "novelsmith: subagents may not run shell commands on book/; the canon guard "
+                                  "cannot check them. Use the Read, Write and Edit tools.")
+        return 0
+    if runs_inline_code(words):
+        return decide("ask", "novelsmith: this runs inline code in a book project, which the canon guard cannot "
+                             "check. Allow it only if you asked for it.")
+    if touches and not read_only(words):
+        return decide("ask", "novelsmith: this shell command could change files under book/, which the canon "
+                             "guard cannot check. Allow it only if you asked for it.")
+    return 0
+
+
+def main(data):
     tool = data.get("tool_name", "")
     inp = data.get("tool_input") or {}
     cwd = Path(data.get("cwd") or os.getcwd())
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
+    book_root = project / "book"
 
     agent = (data.get("agent_type") or "").strip()
     short = agent.split(":")[-1] if agent else ""
     ours = agent.startswith("novelsmith:") or (short in AGENT_SCOPES and ":" not in agent)
 
-    # Rule 3: novelsmith agents get the validator and nothing else from the shell.
+    # Rule 3: the shell.
     if tool == "Bash":
-        if ours and not is_validator_command(inp.get("command", ""), cwd):
-            return decide("deny", f"novelsmith: {short} may run only the outline validator "
-                                  f"(python3 \"{VALIDATOR}\" --book book [--json]) with no other shell syntax. "
-                                  f"Use the Write and Edit tools for files.")
-        return 0
+        return check_bash(inp.get("command", ""), agent, ours, short, cwd, book_root)
 
-    if tool not in ("Write", "Edit", "MultiEdit"):
+    if tool not in WRITE_TOOLS:
         return 0
     raw = inp.get("file_path")
     if not raw:
         return 0
     path = (cwd / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
-    rel = book_relative(path, (project / "book").resolve())
+    rel = book_relative(path, book_root.resolve())
     if rel is None:
+        if ours:
+            return decide("deny", f"novelsmith: {short} writes only under book/; {raw} is outside the book.")
         return 0
 
     # Rule 2: write scopes for subagents.
@@ -190,7 +318,7 @@ def main():
             return decide("deny", f"novelsmith: book/{rel} is canon. Only the bible stage agents (or the author in the "
                                   f"main conversation) edit book/bible/. Propose the change in book/proposals/.")
 
-    # Rule 1: author-owned regions.
+    # Rule 1: author-owned text.
     exists = path.is_file()
     old = read(path)
     new, exact = apply_edits(old, tool, inp)
@@ -203,17 +331,23 @@ def main():
         after, bad_new = waivers_of(new)
         if bad_new:
             if agent:
-                problems.append(f"book/{rel} {bad_new} after this change, so its waivers cannot be checked")
+                problems.append(f"book/{rel}, which {bad_new} after this change, so its waivers cannot be checked")
         elif (after if bad_old else before != after):
             # An unreadable old file may be repaired, as long as the repair adds no waivers.
             problems.append(f"the book.waivers block of book/{rel}")
     old_anchors, new_anchors = anchors(old), anchors(new)
-    if old_anchors != new_anchors and (exists or has_content(new_anchors)):
+    if (old_anchors != new_anchors or visible_anchors(old) != visible_anchors(new)) and (
+            exists or has_content(new_anchors)):
         problems.append(f"a ⚓ section of book/{rel}")
-    protected = rel == SCENES or bool(old_anchors)
-    if not exact and protected:
-        problems.append(f"book/{rel}, which holds author-owned text, with an old_string that does not match the file "
-                        f"exactly, so the change cannot be checked")
+    if rel == PREMISE:
+        changed = [label for label in ns_book.BOOK_SETTINGS
+                   if setting(old, label) and setting(old, label) != setting(new, label)]
+        if changed:
+            problems.append(f"the {', '.join(changed)} setting of book/{rel}")
+    protected = rel in (SCENES, PREMISE) or bool(old_anchors)
+    if not exact and (protected or any(ns_book.ANCHOR in s for s in new_strings(tool, inp))):
+        problems.append(f"book/{rel} with an old_string that does not match the file exactly, in a change that "
+                        f"touches author-owned text, so it cannot be checked")
 
     if not problems:
         return 0
@@ -221,13 +355,21 @@ def main():
     if agent:
         return decide("deny", f"novelsmith: this would change {what}. Those are the author's decisions; agents never "
                               f"change them. Report the tension or write the proposal in book/proposals/.")
-    return decide("ask", f"novelsmith: this changes {what}, which records the author's decisions. "
-                         f"Allow only if the author asked for this change.")
+    return decide("ask", f"novelsmith: this changes {what}, which holds your decisions as the author. "
+                         f"Allow it only if you asked for this change.")
 
 
 if __name__ == "__main__":
+    payload = {}
     try:
-        sys.exit(main())
-    except Exception as exc:  # fail open: a guard bug must not lock the author out
-        print(f"guard-canon: {exc}", file=sys.stderr)
+        payload = json.load(sys.stdin)
+        sys.exit(main(payload))
+    except Exception as exc:
+        tool = payload.get("tool_name", "") if isinstance(payload, dict) else ""
+        if isinstance(payload, dict) and payload.get("agent_type") and tool in WRITE_TOOLS + ("Bash",):
+            # A subagent's call that cannot be checked is denied, not waved through.
+            decide("deny", f"novelsmith: the canon guard could not check this call ({type(exc).__name__}), "
+                           f"so it is denied for subagents.")
+            sys.exit(0)
+        print(f"guard-canon: {exc}", file=sys.stderr)  # the author's own call fails open
         sys.exit(1)

@@ -3,7 +3,7 @@ name: outline
 description: Run novelsmith's outline-first stages with author checkpoints — stage 1 (premise, theme, ending and act beats via the story-architect agent, starting from five or more divergent directions) and stage 3 (chapters and the scene manifest via the outliner agent, validated by scripts/validate-outline.py). Use when the author says "/novelsmith:outline", wants to shape the premise or ending, plan acts, chapters or scenes, build or fix scenes.yaml, or validate the outline before drafting.
 disable-model-invocation: true
 argument-hint: "[premise|scenes|check]"
-allowed-tools: Read, Glob, Grep, Edit, Agent, AskUserQuestion, Bash(python3 *scripts/validate-outline.py --book book), Bash(python3 *scripts/validate-outline.py --book book --json)
+allowed-tools: Read, Glob, Grep, Edit, Agent, AskUserQuestion
 ---
 
 # Outline: premise → acts → scenes
@@ -17,6 +17,8 @@ Validator command (used below):
 ```bash
 python3 "<plugin root>/scripts/validate-outline.py" --book book
 ```
+
+Run it exactly as written, with nothing added. The author may be asked to allow it (it is not pre-approved, so nothing else can ride on the permission); if they decline, say the validator did not run and offer the manual check below.
 
 Exit codes: 0 PASS, 1 FAIL (findings to fix), 2 the book could not be read. On exit 2, show the author its stderr line word for word (it names the file, the line and the fix, such as quoting a value that contains `: `) and stop; this is neither a pass nor a fail. Only if the command itself cannot run (python3 or the script not found, exit 126 or 127) is the validator unavailable: then apply `${CLAUDE_SKILL_DIR}/references/validator-rules.md` by reading the files, and label the result "manual check" wherever you report it.
 
