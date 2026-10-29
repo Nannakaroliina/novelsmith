@@ -1,6 +1,11 @@
 .DS_Store
 __pycache__/
 dist/
+# author data and local tool state never belong in the plugin
+book/
+.claude/settings.local.json
+.venv/
+.pytest_cache/
 .env
 .env.*
 *.pem
