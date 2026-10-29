@@ -27,7 +27,7 @@ You plan the scenes of a novel whose state lives in `book/`. The scene manifest 
 
 Write `book/outline/scenes.yaml` in the shape of `<plugin root>/templates/scenes.yaml` (keep its header comment with the beat and flag vocabularies). Replace the template's example scene.
 
-- `book:` carries `title`, `target_words`, `base_genre`, `structure` (from `premise.md`; `arc` unless another model is declared) and `waivers`. **Never add, change or remove a waiver.** Waivers are the author's; a hook blocks you.
+- `book:` carries `title`, `target_words`, `base_genre` and `structure` (copied exactly from premise.md "Base genre" and "Structural model", `arc` when none is declared; the validator errors on any difference, and only the author changes them) and `waivers`. **Never add, change or remove a waiver.** Waivers are the author's; a hook blocks you.
 - Budget: the scene `word_target`s sum to within 10% of `target_words`; 25/50/25 across the acts for the arc model; scenes vary in length (1,000–5,000 words, mystery scenes run long).
 - Quote every string value that contains `: ` or `#`, or starts with `[`, `{`, `*`, `&` or a quote (`outcome: "no-and: the key is gone"`); unquoted, it breaks the YAML.
 - Every scene: `id` (`chNN-sNN`, in reading order), `chapter`, `pov` and `characters` (each must have a sheet; use the sheet's name or a listed alias), `location`, `time` (`Day N, HH:MM`), `goal`, `conflict`, `turn`, `outcome`, `value_shift`, `word_target`, `status: planned`.
@@ -52,9 +52,9 @@ Run:
 python3 "<plugin root>/scripts/validate-outline.py" --book book
 ```
 
-If the command cannot run at all (no Bash tool, python3 or the file not found, any exit code other than 0 or 1), apply `<plugin root>/skills/outline/references/validator-rules.md` by reading the files instead, and say "manual check" in your reply. A manual pass is slower and less exact; never report it as the validator's PASS.
+Exit 0 is PASS, exit 1 is FAIL with findings to fix. Exit 2 means the validator could not read the book: its last stderr line names the file, the line and the cause (for example an unquoted `: ` or a repeated key). Fix that line in the file you wrote and rerun; if the broken file is not one you may write, report the line to the author. Only if the command itself cannot run (no Bash tool, python3 or the script not found, exit 126 or 127) apply `<plugin root>/skills/outline/references/validator-rules.md` by reading the files instead, and say "manual check" in your reply. A manual pass is slower and less exact; never report it as the validator's PASS.
 
-Fix every ERROR by changing the outline, not by gaming the check, and rerun. Stop after the validator passes or after three fix rounds, whichever comes first. If an error persists because of an anchored decision or because fixing it needs a decision only the author can make (a new character, a different ending), stop fixing it and report it. Then address WARNINGS where the fix is a planning improvement; leave the rest and list them. Use Bash only to run the validator.
+Fix every ERROR by changing the outline, not by gaming the check, and rerun. Stop after the validator passes or after three fix rounds, whichever comes first. If an error persists because of an anchored decision or because fixing it needs a decision only the author can make (a new character, a different ending), stop fixing it and report it. Then address WARNINGS where the fix is a planning improvement; leave the rest and list them. Bash is for the validator command above, exactly as written (optionally with `--json`); the canon guard denies any other shell command, including pipes, redirections and `&&`.
 
 ## De-AI outline check
 

@@ -2,7 +2,7 @@
 name: doctor
 description: Check that novelsmith works in this environment (especially Cowork) — plugin files found, settings, python3 for the outline validator and canon guard, the four planning agents, and a live test that the canon guard hook blocks an out-of-scope agent write. Use when the author says "/novelsmith:doctor", after installing or updating the plugin, or when the validator or guard seems not to work.
 disable-model-invocation: true
-allowed-tools: Read, Glob, Agent, Bash(python3 *), Bash(rm book/outline/_novelsmith-guard-test.md)
+allowed-tools: Read, Glob, Agent, Bash(python3 *scripts/selfcheck.py), Bash(rm book/outline/_novelsmith-guard-test.md)
 ---
 
 # Novelsmith doctor

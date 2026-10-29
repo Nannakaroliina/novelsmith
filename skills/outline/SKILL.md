@@ -3,7 +3,7 @@ name: outline
 description: Run novelsmith's outline-first stages with author checkpoints — stage 1 (premise, theme, ending and act beats via the story-architect agent, starting from five or more divergent directions) and stage 3 (chapters and the scene manifest via the outliner agent, validated by scripts/validate-outline.py). Use when the author says "/novelsmith:outline", wants to shape the premise or ending, plan acts, chapters or scenes, build or fix scenes.yaml, or validate the outline before drafting.
 disable-model-invocation: true
 argument-hint: "[premise|scenes|check]"
-allowed-tools: Read, Glob, Grep, Edit, Agent, AskUserQuestion, Bash(python3 *)
+allowed-tools: Read, Glob, Grep, Edit, Agent, AskUserQuestion, Bash(python3 *scripts/validate-outline.py --book book), Bash(python3 *scripts/validate-outline.py --book book --json)
 ---
 
 # Outline: premise → acts → scenes
@@ -18,7 +18,9 @@ Validator command (used below):
 python3 "<plugin root>/scripts/validate-outline.py" --book book
 ```
 
-If the command cannot run (python3 or the file not found; any exit code other than 0 or 1), the validator is unavailable, not failed: apply `${CLAUDE_SKILL_DIR}/references/validator-rules.md` by reading the files, and label the result "manual check" wherever you report it.
+Exit codes: 0 PASS, 1 FAIL (findings to fix), 2 the book could not be read. On exit 2, show the author its stderr line word for word (it names the file, the line and the fix, such as quoting a value that contains `: `) and stop; this is neither a pass nor a fail. Only if the command itself cannot run (python3 or the script not found, exit 126 or 127) is the validator unavailable: then apply `${CLAUDE_SKILL_DIR}/references/validator-rules.md` by reading the files, and label the result "manual check" wherever you report it.
+
+**Choices for the author.** `AskUserQuestion` shows at most four options. When a choice has more (five or more directions, five names per role), write every option as a numbered line in your message first, then ask the author to reply with a number, a combination ("2 with the ending of 4") or their own answer. Never drop an option to fit the tool.
 
 ## 0. Where are we?
 
@@ -29,7 +31,7 @@ If the command cannot run (python3 or the file not found; any exit code other th
 ## 1. Stage `premise` (story-architect)
 
 1. **Options.** Unless the author has already decided the ending (in `premise.md`, under `## ⚓ Anchored`, or in `$ARGUMENTS`), launch the `novelsmith:story-architect` agent with: "Mode: options. Book state is in book/. Today is <date>." Add anything the author said in this conversation about what they want or do not want.
-2. Read the options file it wrote in `book/proposals/`. Give the author one line per direction (arc shape, who resolves, what stays open) and ask which to develop with `AskUserQuestion` (options: each direction, plus "combine" or "none, regenerate"). Do not recommend one. If they want a combination or a regeneration, collect their steer in their own words and run options again or pass the combination to develop.
+2. Read the options file it wrote in `book/proposals/`. Give the author one numbered line per direction (arc shape, who resolves, what stays open) and ask which to develop, following **Choices for the author** above: every direction, plus "combine" and "none, regenerate". Do not recommend one. If they want a combination or a regeneration, collect their steer in their own words and run options again or pass the combination to develop.
 3. **Develop.** Launch `novelsmith:story-architect` with: "Mode: develop. Develop direction <N> from book/proposals/<file>" plus the author's adjustments verbatim.
 4. **Check the files**: read `premise.md` and `acts.md`. The ending, controlling idea, counter-idea and hook must be filled and the beat table's "What happens" column complete for the declared model. If anything is missing, send the agent back once with the specific gap.
 5. **Checkpoint.** Tell the author, briefly: what is now in `premise.md` and `acts.md`, the open questions the agent listed, and that decisions they are sure of belong under `## ⚓ Anchored` (agents can never change those; offer to move named decisions there for them, and do it only on their yes). Update `book/progress.md`: current stage 2, next action `/novelsmith:bible`, and a decisions-log row for the direction chosen. Stop.
