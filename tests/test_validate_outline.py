@@ -49,6 +49,31 @@ class ValidateOutline(unittest.TestCase):
         self.assertEqual(code, 0, out and out["findings"] or err)
         self.assertEqual(out["stats"]["scenes"], 12)
         self.assertTrue(out["stats"]["nordic"])
+        self.assertEqual(checks(out, "warning"), set())  # pin: a new warning on a good outline is a regression
+
+    def test_non_mystery_uses_plain_beats(self):
+        self.replace(self.book / "bible/premise.md", "- Base genre: mystery", "- Base genre: literary")
+        self.replace(self.scenes, "base_genre: mystery", "base_genre: literary")
+        code, out, _ = run(self.book)
+        self.assertIn("beats", checks(out))  # inciting_crime / exposure do not count outside a mystery
+        self.replace(self.scenes, 'beat: "inciting_crime"', 'beat: "inciting"')
+        self.replace(self.scenes, "beat: [climax, exposure]", "beat: climax")
+        self.replace(self.scenes, "clues_paid: [C01, C02]", "clues_paid: []")
+        code, out, err = run(self.book)
+        self.assertEqual(code, 0, out and out["findings"] or err)
+        self.assertFalse(out["stats"]["mystery"])
+
+    def test_clue_paid_in_the_scene_it_is_planted_fails(self):
+        self.replace(self.scenes, "clues_paid: [C01, C02]", "clues_paid: [C01, C02]\n    # same-scene plant below")
+        text = self.scenes.read_text(encoding="utf-8")
+        idx = text.index("clues_paid: [C01, C02]")
+        start = text.rindex("clues_planted:", 0, idx)
+        end = text.index("\n", start)
+        self.scenes.write_text(text[:start] + "clues_planted: [C03]" + text[end:]
+                               .replace("clues_paid: [C01, C02]", "clues_paid: [C01, C02, C03]", 1), encoding="utf-8")
+        clues = self.book / "bible/clues.md"
+        self.replace(clues, "| C02 | wet boots |", "| C02 | wet boots |\n| C03 | the ferry ticket |")
+        self.assert_error("fair_play")
 
     def test_missing_turn(self):
         self.replace(self.scenes, "    turn: turn 3\n", "    turn: \"\"\n")
