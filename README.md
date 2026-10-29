@@ -2,15 +2,17 @@
 
 A Claude Code plugin for writing novels with a multi-agent, outline-first workflow. The book's state lives in a `book/` tree in your project; agents read and write files there, propose changes, and stop at every stage boundary so the author decides.
 
-**Status: Phase 2 (outline-first core).** Phase 1's scaffolding, craft knowledge, de-AI taxonomy and mystery + Nordic/Finnish crime references, plus the four planning agents, the outline validator and the canon guard hook. Drafting, critique and revision arrive in Phases 3–4.
+**Status: Phase 2 (outline-first core), MIT licence.** Phase 1's scaffolding, craft knowledge, de-AI taxonomy and mystery + Nordic/Finnish crime references, plus the four planning agents, the outline validator and the canon guard hook. Drafting, critique and revision arrive in Phases 3–4.
 
 ## Install in Cowork (where the writing happens)
 
-1. Build the upload zip (it leaves out `docs/`, `tests/` and git metadata):
+1. Get the upload zip, `novelsmith-<version>.zip`. If someone gave you the file, skip to step 2. To build it yourself you need this folder on your computer and Python 3 (macOS asks to install the developer tools the first time you run `python3`). Open the Terminal app, go into the folder (type `cd `, drag the folder onto the Terminal window, press Return), and run:
 
    ```bash
    python3 scripts/build_zip.py
    ```
+
+   It prints where the zip is (`dist/novelsmith-<version>.zip`). It packs only committed plugin files, never `book/` or local settings.
 
 2. In claude.ai or the desktop app: **Customize > Plugins > Add > Upload plugin**, and pick `dist/novelsmith-<version>.zip`.
 3. Start a Cowork task in the folder that holds (or will hold) your `book/`, and run `/novelsmith:doctor`. It reports whether the plugin files, python3, the four agents and the canon guard work in that session.
@@ -89,18 +91,24 @@ book/
 
 `scripts/validate-outline.py --book book [--json]` exits 0 on pass, 1 on errors, 2 when the book cannot be read.
 
-- **Errors (block drafting):** missing goal/conflict/turn/outcome/value shift; outcome not `yes-but`/`no-and` (sequels excepted); malformed or duplicate ids, chapters out of order; a POV or character with no sheet; a model-default name (Elias, Mara, Elara…) not anchored by the author; for the arc model, a missing inciting/doorway/pinch/midpoint/all-is-lost/climax beat, beats out of order, or a climax before 80%; no subplot; no `compromise`, `non_protagonist_resolution` or open thread; for mysteries, unknown clue ids and any clue paid off before it is planted.
+- **Cannot read (exit 2):** scenes.yaml missing, not UTF-8, not valid YAML, a repeated key, or `book` / `book.waivers` not a mapping. The message names the line.
+- **Errors (block drafting):** `base_genre` or `structure` in scenes.yaml differing from premise.md; missing goal/conflict/turn/outcome/value shift; outcome not `yes-but`/`no-and` (sequels excepted); malformed or duplicate ids, chapters out of order; a POV or character with no sheet; a model-default name (Elias, Mara, Elara…) not anchored by the author, or a name with invisible characters or mixed alphabets; for the arc model, a missing inciting/doorway/pinch/midpoint/all-is-lost/climax beat, beats out of order, or a climax before 80%; no subplot; no `compromise`, `non_protagonist_resolution` or open thread; for mysteries, unknown clue ids and any clue paid off before it is planted.
 - **Warnings:** beat placement outside its window, long tail after the climax, uniform chapter lengths or scene counts, too few `no-and` setbacks or none in a quarter, runs of three identical outcomes, consecutive sequels, no non-linear move, length drift, mystery placement (crime by 20%, false solution, short denouement), and the four Nordic/Finnish subplot tags.
 - **Waivers** live in `book.waivers` in `scenes.yaml` and belong to the author: a waived error is reported but does not fail. The guard denies agents any change to waivers.
 
 ## The canon guard
 
-A `PreToolUse` hook on `Write|Edit|MultiEdit` under `book/`:
+A `PreToolUse` hook on `Write|Edit|MultiEdit|Bash`:
 
-- `## ⚓ Anchored` sections (any Markdown file) and `book.waivers` are the author's. A subagent changing one is denied; in the main conversation you are asked to confirm.
-- Each novelsmith agent writes only its own files (for example the worldbuilder writes `bible/world/`, `bible/timeline.md`, `proposals/`). Other subagents cannot write under `book/bible/`.
-- The guard covers the file tools only; a shell command that writes a file is not inspected. Novelsmith agents get Bash only where they need it (the outliner, to run the validator).
+- Every heading containing ⚓ (with its body, HTML comments included) in any `book/` file, and `book.waivers` in `scenes.yaml`, are the author's. A subagent changing one, adding a new ⚓ section, or leaving `scenes.yaml` unparseable is denied; in the main conversation you are asked to confirm.
+- Each novelsmith agent writes only its own files (for example the worldbuilder writes `bible/world/`, `bible/timeline.md`, `proposals/`); a novelsmith agent with no registered scope writes nothing under `book/`. Other subagents cannot write under `book/bible/`. Paths are compared case-insensitively, as macOS and Windows treat `Bible/` and `bible/` as one folder.
+- A subagent's edit of a protected file must match the text exactly (the Edit tool otherwise matches curly quotes loosely).
+- Novelsmith agents may run exactly one shell command, the outline validator; any other Bash call from them is denied. Shell commands from the main conversation and from other plugins' agents are not inspected.
 - Where python3 or the script is unavailable the hook exits silently and allows the write, so a broken environment never stops you writing; the agents' own instructions still keep them in scope. `/novelsmith:doctor` shows whether the guard is live.
+
+## Getting help
+
+Run `/novelsmith:doctor` first and include its table. Report problems to the plugin's author (Nanna Setämaa) through the repository you got the plugin from.
 
 ## Roadmap
 

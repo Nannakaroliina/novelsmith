@@ -93,7 +93,7 @@ On "no": fill the voice blocks before drafting; at stage 7, flag the chapters wh
 ### 13. Does the name list exist and is it clean?
 Measured: Elias 26.5%, Mara 16.7%, Elara 13.1% of 20,000 AI stories; "lighthouse" 51.2%, "keeper" 48.1%; Elias ~900x over contemporary-novel frequency.
 - [ ] `style.md` has a name list, and every named character in `scenes.yaml` and `characters/` is on it.
-- [ ] No name from the measured or community clusters (Elias, Elara, Mara, Elena, Voss, Vance, Thorne, Aris, Silas, Kael/Kaelen, Seraphina, Blackwood, Marcus, Sarah, Chloe, Lily, Priya-in-London) unless the author anchored it.
+- [ ] No name from the measured or community clusters (Elias, Elara, Mara, Elena, Voss, Vance, Thorne, Aris, Silas, Kael/Kaelen, Seraphina, Blackwood, Marcus, Sarah, Chloe, Lily, Lyra, Aria, Sera, Theron, Orion, Priya-in-London; the validator's list is in `book/bible/style.md`) unless the author anchored it.
 - [ ] Names fit the setting's naming conventions and era (`world/*.md`); no two major characters share a first initial; no trade-name characters (the baker, the clockmaker, the keeper) without a name.
 - [ ] No place called Eldora, Whispering Woods, or any unplaced "village by the sea".
 On "no": generate names from the setting's real naming data (parish records, population registers, the author's own list), not from the model's defaults; replace in `scenes.yaml` and `characters/` before drafting.

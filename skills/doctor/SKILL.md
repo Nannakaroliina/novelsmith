@@ -31,4 +31,4 @@ Run every check, then report one table. Change nothing in `book/` except the sin
 | Agents | 4 of 4 / missing: … | |
 | Canon guard (live) | blocks out-of-scope writes / inactive / skipped | |
 
-End with one line: "Ready" if checks 1, 3, 4 and 5 passed, otherwise the single most important problem and its consequence. Do not offer fixes that need changing the plugin; the author reports those.
+End with one line: "Ready" if checks 1, 3 and 4 passed and check 5 passed or was skipped (then add "(the live guard test runs after /novelsmith:novel-start)"); otherwise the single most important problem and its consequence. Do not offer fixes that need changing the plugin; say the author can report them to the plugin's author (see the README).

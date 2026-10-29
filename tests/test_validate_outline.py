@@ -261,6 +261,31 @@ class ValidateOutline(unittest.TestCase):
         self.assertIn("line 3", err)
 
 
+class RulesStayInSync(unittest.TestCase):
+    """The prose fallback and the templates restate the validator's vocabulary; keep them aligned."""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("validate_outline", SCRIPT)
+        self.v = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.v)
+
+    def test_every_check_id_is_documented(self):
+        code = SCRIPT.read_text(encoding="utf-8")
+        ids = set(re.findall(r'rep\.(?:error|warn)\(\s*"([a-z_]+)"', code))
+        rules = (ROOT / "skills/outline/references/validator-rules.md").read_text(encoding="utf-8")
+        self.assertTrue(ids)
+        self.assertEqual({i for i in ids if f"`{i}`" not in rules}, set())
+
+    def test_vocabularies_in_template(self):
+        template = (ROOT / "templates/scenes.yaml").read_text(encoding="utf-8")
+        self.assertEqual({w for w in self.v.BEATS | self.v.FLAGS if w not in template}, set())
+
+    def test_default_banned_names_in_style_template(self):
+        style = (ROOT / "templates/style.md").read_text(encoding="utf-8")
+        self.assertEqual({n for n in self.v.DEFAULT_BANNED_NAMES if n not in style}, set())
+
+
 class MiniYaml(unittest.TestCase):
     def test_fallback_matches_pyyaml_on_fixture(self):
         text = fixture.scenes_yaml()

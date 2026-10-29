@@ -12,14 +12,14 @@ You are setting up the file-first state for a novel. The `book/` tree in the pro
 
 ## Steps
 
-1. **Check for an existing project.** If `book/progress.md` exists, stop and tell the author: this project is already started; read `book/progress.md` and continue from "Next action" instead.
+1. **Check for an existing project.** If `book/progress.md` exists, stop and tell the author: this project is already started; read `book/progress.md` and continue from "Next action" instead. If `book/` exists without it (an interrupted start, or a tree the author prepared), list the files already there and continue only on the author's yes.
 
 2. **Interview the author** with `AskUserQuestion` (or plain questions if the tool is unavailable). Ask only what the templates need; take the working title from `$ARGUMENTS` if given. Ask, in two short rounds at most:
    - Your name as the author, working title, base genre, subgenre/variant (e.g. Nordic noir, cozy, police procedural), secondary genre if any, target length. Offer the plugin settings as defaults: author `${user_config.author_name}`, genre `${user_config.default_genre}`, length `${user_config.target_words}`. A setting that is empty or still reads as a `${…}` placeholder is unset (Cowork does not prompt for plugin settings): then default to genre mystery and 85000 words, and ask for the author's name.
    - POV and tense; the one-sentence premise if they have it; comparable titles.
    - Whether they have 2–3 samples of their own prose to paste into the style sheet (strongly encourage this: the samples calibrate voice and the de-AI baseline). If not now, leave the slots and note it in progress.md.
 
-3. **Create the tree** from the plugin's templates in `${CLAUDE_SKILL_DIR}/../../templates/`, filling `{{title}}`, `{{genre}}`, `{{target_words}}`, `{{author}}` with the interview answers:
+3. **Create the tree** from the plugin's templates in `${CLAUDE_SKILL_DIR}/../../templates/`, filling `{{title}}`, `{{genre}}`, `{{target_words}}`, `{{author}}` with the interview answers. **Never overwrite a file that already exists**: create only the missing ones and tell the author which you skipped:
 
    ```text
    book/

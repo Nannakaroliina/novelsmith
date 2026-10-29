@@ -1,6 +1,6 @@
 # Progress
 
-<!-- The resumable checkpoint. Read this first in every session. Keep it short; history lives in git. -->
+<!-- The resumable checkpoint. Read this first in every session. Keep it short; older decisions stay in the Decisions log below. This folder is not versioned unless you back it up or use git. -->
 
 - Book: {{title}}
 - Author: {{author}}
