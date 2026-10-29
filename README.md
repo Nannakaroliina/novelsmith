@@ -100,11 +100,12 @@ book/
 
 A `PreToolUse` hook on `Write|Edit|MultiEdit|Bash`:
 
-- Every heading containing ⚓ (with its body, HTML comments included) in any `book/` file, and `book.waivers` in `scenes.yaml`, are the author's. A subagent changing one, adding a new ⚓ section, or leaving `scenes.yaml` unparseable is denied; in the main conversation you are asked to confirm.
-- Each novelsmith agent writes only its own files (for example the worldbuilder writes `bible/world/`, `bible/timeline.md`, `proposals/`); a novelsmith agent with no registered scope writes nothing under `book/`. Other subagents cannot write under `book/bible/`. Paths are compared case-insensitively, as macOS and Windows treat `Bible/` and `bible/` as one folder.
-- A subagent's edit of a protected file must match the text exactly (the Edit tool otherwise matches curly quotes loosely).
-- Novelsmith agents may run exactly one shell command, the outline validator; any other Bash call from them is denied. Shell commands from the main conversation and from other plugins' agents are not inspected.
-- Where python3 or the script is unavailable the hook exits silently and allows the write, so a broken environment never stops you writing; the agents' own instructions still keep them in scope. `/novelsmith:doctor` shows whether the guard is live.
+- Every heading containing ⚓ (with its body, HTML comments included) in any `book/` file, `book.waivers` in `scenes.yaml`, and the genre, variant and structural-model settings of `premise.md` are the author's. A subagent changing one, adding a new ⚓ section, hiding one in a comment, or leaving `scenes.yaml` unreadable is denied; in the main conversation you are asked to confirm. Agents may fill a setting that is still empty.
+- Each novelsmith agent writes only its own files under `book/` (for example the worldbuilder writes `bible/world/`, `bible/timeline.md`, `proposals/`) and nothing outside `book/`; a novelsmith agent with no registered scope writes nothing. Other subagents cannot write under `book/bible/`. Paths are compared case-insensitively, as macOS and Windows treat `Bible/` and `bible/` as one folder.
+- A subagent's edit of protected text must match it exactly (the Edit tool otherwise matches curly quotes loosely).
+- Shell: novelsmith agents may run exactly one command, the outline validator. Other subagents may not run shell commands on `book/`. In the main conversation you are asked before inline code (`python3 -c`, `sh -c`, heredocs) or a command that could change `book/`; reading commands and the plugin's own validator and self-check run as usual.
+- Book YAML may not use anchors or aliases, repeat keys or nest more than 64 levels; both parsers refuse them, which also stops "alias bomb" slowdowns.
+- If the guard cannot check a subagent's call (its own error), the call is denied. Where python3 or the script is unavailable the hook exits silently and allows the write, so a broken environment never stops you writing; the agents' own instructions still keep them in scope. `/novelsmith:doctor` shows whether the guard is live.
 
 ## Getting help
 

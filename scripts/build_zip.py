@@ -66,7 +66,7 @@ def tracked_files(root):
         out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
-    return {name for name in out.decode("utf-8").split("\0") if name}
+    return {name for name in out.decode("utf-8", errors="surrogateescape").split("\0") if name}
 
 
 def select_files(root, tracked):
@@ -96,7 +96,11 @@ def main():
         problems += frontmatter_problems(p, False)
     if (ROOT / "bin").exists():
         problems.append("bin/ present: claude.ai and Cowork refuse plugins with a top-level bin/ directory")
-    files, secrets = select_files(ROOT, tracked_files(ROOT))
+    tracked = tracked_files(ROOT)
+    if tracked is None:
+        print("build_zip: not a git checkout (or git unavailable); packing every allowlisted file on disk, "
+              "including uncommitted ones", file=sys.stderr)
+    files, secrets = select_files(ROOT, tracked)
     problems += [f"{p.relative_to(ROOT).as_posix()}: looks like a secret; remove it from the plugin" for p in secrets]
     if problems:
         sys.exit("refusing to build:\n" + "\n".join(f"- {x}" for x in problems))

@@ -339,7 +339,8 @@ def validate(book):
                 hits.add((b, name))
     for b, name in sorted(hits):
         rep.error("names", f"{name!r} uses the model-default name {b!r}", "characters",
-                  "Draw names from the setting's real naming data; anchor the name in premise.md if it is deliberate.")
+                  "If the name is deliberate, add it under ## ⚓ Anchored in book/bible/premise.md; otherwise draw names "
+                  "from the setting's real naming data.")
     for name in sorted(used):
         why = suspicious_name(name)
         if why:

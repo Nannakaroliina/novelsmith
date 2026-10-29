@@ -89,6 +89,10 @@ def main():
                           "old_string": "harbour master's sister", "new_string": "harbour master"}))
         check("guard lets the outliner run the validator", lambda: decision(
             None, "novelsmith:outliner", {"command": f'python3 "{validator}" --book book'}, tool="Bash"))
+        check("guard denies crafted YAML instead of failing open", lambda: decision(
+            "deny", "novelsmith:outliner",
+            {"file_path": str(scenes), "content": scenes.read_text(encoding="utf-8").replace(
+                "  waivers: {}", '  waivers: {compromise: "x"}') + "x: 0x_\n"}))
         check("guard denies the outliner any other shell command", lambda: decision(
             "deny", "novelsmith:outliner", {"command": "sed -i s/a/b/ book/outline/scenes.yaml"}, tool="Bash"))
 
