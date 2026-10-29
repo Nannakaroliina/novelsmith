@@ -18,8 +18,8 @@
 book:
   title: ""
   target_words: 85000
-  base_genre: ""
-  structure: arc          # arc | kishotenketsu | alison  (non-arc models skip the beat checks)
+  base_genre: ""          # copy of premise.md "Base genre"; a mismatch is an error
+  structure: arc          # copy of premise.md "Structural model" (arc | kishotenketsu | alison); a mismatch is an error
   waivers: {}             # AUTHOR ONLY. check-id: "reason", e.g. open_thread: "anchored closed ending"
 
 scenes:

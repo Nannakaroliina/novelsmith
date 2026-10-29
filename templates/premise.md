@@ -12,6 +12,7 @@ One sentence: protagonist + goal + opposition + stakes.
 - Base genre: {{genre}}
 - Subgenre / variant: (e.g. Nordic noir, cozy, procedural)
 - Secondary genre (if a blend): none
+- Structural model: arc (or kishotenketsu / alison; see craft-structure §0)
 - Target length: {{target_words}} words
 - Comparable titles: 
 

@@ -22,10 +22,25 @@ class YAMLError(ValueError):
         super().__init__(f"line {line}: {message}" if line else message)
 
 
+if _pyyaml is not None:
+    class _StrictLoader(_pyyaml.SafeLoader):
+        """SafeLoader that refuses duplicate keys (plain PyYAML silently keeps the last one)."""
+
+        def construct_mapping(self, node, deep=False):
+            seen = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in seen:
+                    raise _pyyaml.constructor.ConstructorError(
+                        None, None, f"duplicate key {key!r}", key_node.start_mark)
+                seen.add(key)
+            return super().construct_mapping(node, deep=deep)
+
+
 def load(text):
     if _pyyaml is not None:
         try:
-            return _pyyaml.safe_load(text)
+            return _pyyaml.load(text, Loader=_StrictLoader)
         except _pyyaml.YAMLError as exc:
             mark = getattr(exc, "problem_mark", None)
             raise YAMLError(str(exc), mark.line + 1 if mark else None) from exc

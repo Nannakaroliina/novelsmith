@@ -27,7 +27,9 @@ import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ns_book  # noqa: E402
 import ns_yaml  # noqa: E402
+from ns_book import section, strip_html_comments  # noqa: E402
 
 REQUIRED_FIELDS = ("id", "chapter", "pov", "goal", "conflict", "turn", "outcome", "value_shift", "word_target")
 STATUSES = {"planned", "drafted", "revised", "locked"}
@@ -64,7 +66,8 @@ DEFAULT_BANNED_NAMES = [
 ID_RE = re.compile(r"^ch(\d{2,3})-s(\d{2,3})$")
 OUTCOME_RE = re.compile(r"^\s*(yes-but|no-and)\b", re.I)
 SHIFT_RE = re.compile(r"\bfrom\b.+\bto\b", re.I)
-DAY_RE = re.compile(r"day\s*(-?\d+)", re.I)
+DAY_RE = re.compile(r"\bday\s*(-?\d+)", re.I)
+STRUCTURES = {"arc", "kishotenketsu", "alison"}
 CLOCK_RE = re.compile(r"(\d{1,2}):(\d{2})")
 
 
@@ -90,18 +93,22 @@ def tag(v):
     return norm(v).replace("-", "_")
 
 
-def section(md, heading_pattern):
-    """Text of the first ## section whose heading matches, up to the next ## heading."""
-    m = re.search(r"^##\s+" + heading_pattern + r".*$", md, re.M | re.I)
-    if not m:
-        return ""
-    rest = md[m.end():]
-    nxt = re.search(r"^##\s", rest, re.M)
-    return rest[: nxt.start()] if nxt else rest
+def read(path):
+    """Read a bible file; a stray non-UTF-8 byte must not take down the run."""
+    return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
 
 
-def strip_html_comments(md):
-    return re.sub(r"<!--.*?-->", "", md, flags=re.S)
+def suspicious_name(name):
+    """Zero-width/format characters, or letters from more than one script (Latin 'E' vs Cyrillic 'Е')."""
+    if any(unicodedata.category(ch) == "Cf" for ch in name):
+        return "contains an invisible formatting character"
+    scripts = set()
+    for ch in name:
+        if ch.isalpha():
+            scripts.add(unicodedata.name(ch, "UNKNOWN").split()[0])
+    if len(scripts) > 1:
+        return f"mixes letters from {', '.join(sorted(scripts))} scripts"
+    return ""
 
 
 class Report:
@@ -137,7 +144,7 @@ def load_characters(bible):
         if f.name.startswith("_"):
             continue
         slug = f.stem
-        text = f.read_text(encoding="utf-8")
+        text = read(f)
         m = re.search(r"^#\s+(.+)$", text, re.M)
         heading = m.group(1).strip() if m and "{{" not in m.group(1) else ""
         headings[slug] = heading
@@ -173,7 +180,7 @@ def table_first_column(md):
 def banned_names(bible):
     style = bible / "style.md"
     if style.is_file():
-        m = re.search(r"Banned names[^:]*:\s*(.+)$", style.read_text(encoding="utf-8"), re.M | re.I)
+        m = re.search(r"Banned names[^:\n]*:[ \t]*(\S.*)$", read(style), re.M | re.I)
         if m:
             return [n.strip() for n in m.group(1).split(",") if n.strip()]
     return DEFAULT_BANNED_NAMES
@@ -196,25 +203,45 @@ def validate(book):
         data = ns_yaml.load(manifest_path.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
         raise SystemExit(f"cannot read {manifest_path}: no such file")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{manifest_path}: not UTF-8 text ({exc.reason} at byte {exc.start}); re-save it as UTF-8")
     except ns_yaml.YAMLError as exc:
         raise SystemExit(f"{manifest_path}: {exc}")
     if not isinstance(data, dict):
         raise SystemExit(f"{manifest_path}: top level must be a mapping with 'book' and 'scenes'")
 
     meta = data.get("book") or {}
+    if not isinstance(meta, dict):
+        raise SystemExit(f"{manifest_path}: 'book' must be a mapping (title, target_words, base_genre, structure, waivers)")
+    waivers = meta.get("waivers") or {}
+    if not isinstance(waivers, dict):
+        raise SystemExit(f"{manifest_path}: book.waivers must be a mapping of check-id: \"reason\", e.g. {{open_thread: \"…\"}}")
     scenes = data.get("scenes") or []
-    rep = Report(meta.get("waivers"))
+    rep = Report(waivers)
     bible = book / "bible"
 
-    premise = (bible / "premise.md").read_text(encoding="utf-8") if (bible / "premise.md").is_file() else ""
-    anchored = section(premise, "⚓")
-    genre_line = re.search(r"Base genre:\s*(.+)$", premise, re.M)
-    variant_line = re.search(r"Subgenre / variant:\s*(.+)$", premise, re.M)
-    genre = str(meta.get("base_genre") or (genre_line.group(1) if genre_line else "")).lower()
-    variant = (variant_line.group(1) if variant_line else "").lower()
+    # premise.md is the source of truth for genre and structure; scenes.yaml only mirrors them.
+    premise = read(bible / "premise.md")
+    anchored = ns_book.anchored_text(premise)
+    premise_genre = ns_book.field(premise, "Base genre").lower()
+    variant = ns_book.field(premise, "Subgenre / variant").lower()
+    manifest_genre = str(meta.get("base_genre") or "").strip().lower()
+    if premise_genre and manifest_genre and manifest_genre != premise_genre:
+        rep.error("book_meta", f"scenes.yaml base_genre {manifest_genre!r} differs from premise.md {premise_genre!r}", "book",
+                  "premise.md decides the genre; copy it into scenes.yaml or ask the author to change the premise.")
+    genre = premise_genre or manifest_genre
     is_mystery = any(w in genre for w in MYSTERY_WORDS)
     is_nordic = is_mystery and any(w in genre + " " + variant for w in NORDIC_WORDS)
-    structure = tag(meta.get("structure") or "arc")
+    premise_structure = tag(ns_book.field(premise, "Structural model").split(" ")[0]) if ns_book.field(
+        premise, "Structural model") else ""
+    manifest_structure = tag(meta.get("structure") or "")
+    structure = premise_structure or "arc"
+    if premise_structure and premise_structure not in STRUCTURES:
+        rep.error("book_meta", f"premise.md structural model {premise_structure!r} is not one of {', '.join(sorted(STRUCTURES))}",
+                  "premise.md")
+    if manifest_structure and manifest_structure != structure:
+        rep.error("book_meta", f"scenes.yaml structure {manifest_structure!r} differs from premise.md ({structure})", "book",
+                  "Only the author changes the structural model, in premise.md → Genre → Structural model.")
 
     if not isinstance(scenes, list) or not scenes:
         rep.error("fields", "scenes.yaml has no scenes", "scenes")
@@ -301,6 +328,11 @@ def validate(book):
     for b, name in sorted(hits):
         rep.error("names", f"{name!r} uses the model-default name {b!r}", "characters",
                   "Draw names from the setting's real naming data; anchor the name in premise.md if it is deliberate.")
+    for name in sorted(used):
+        why = suspicious_name(name)
+        if why:
+            rep.error("names", f"{name!r} {why}", "characters",
+                      "Retype the name in plain letters of one alphabet; look-alike characters hide default names.")
 
     # ---- positions -----------------------------------------------------------
     cum = 0
@@ -373,15 +405,16 @@ def validate(book):
         rep.error("compromise", "no scene is flagged compromise: the protagonist is never morally compromised", "flags",
                   "Pick the beat nearest 37% or 62% and have the protagonist take the selfish option; plan the consequence in act 3.")
     else:
-        for s in scenes:
-            if "compromise" in s["_flags"] and s["_pos"] > 0.92:
-                rep.warn("compromise", "the only compromise this late leaves no room for consequence", str(s.get("id")))
+        compromises = [s for s in scenes if "compromise" in s["_flags"]]
+        if min(s["_pos"] for s in compromises) > 0.92:
+            rep.warn("compromise", "the only compromise is this late, leaving no room for consequence",
+                     ", ".join(str(s.get("id")) for s in compromises))
     if "non_protagonist_resolution" not in all_flags:
         rep.error("non_protagonist_resolution", "every resolution is driven by the protagonist", "flags",
                   "Give one thread's resolution to another character, chance, an institution, weather, or the antagonist's error.")
 
     acts_path = book / "outline" / "acts.md"
-    acts = strip_html_comments(acts_path.read_text(encoding="utf-8")) if acts_path.is_file() else ""
+    acts = strip_html_comments(read(acts_path))
     open_md = section(acts, r"Threads the book leaves open")
     open_items = [l for l in open_md.splitlines() if re.match(r"^\s*[-*]\s+\S", l)]
     if "open_thread" not in all_flags and not open_items:
@@ -439,7 +472,7 @@ def validate(book):
 
     # ---- mystery ------------------------------------------------------------
     if is_mystery:
-        clue_md = (bible / "clues.md").read_text(encoding="utf-8") if (bible / "clues.md").is_file() else ""
+        clue_md = read(bible / "clues.md")
         known = table_first_column(clue_md)
         planted_at = {}
         for s in scenes:
@@ -497,8 +530,11 @@ def main():
     book = find_book(args.book)
     try:
         rep, stats = validate(book)
-    except SystemExit as exc:
-        print(f"validate-outline: {exc}", file=sys.stderr)
+    except (SystemExit, Exception) as exc:  # exit 1 means "outline has errors"; anything that stops the check is 2
+        reason = str(exc) if isinstance(exc, SystemExit) else f"{type(exc).__name__}: {exc}"
+        print(f"validate-outline: {reason}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"pass": False, "unreadable": True, "error": reason}, ensure_ascii=False))
         return 2
 
     errors, warnings = rep.count("error"), rep.count("warning")

@@ -6,16 +6,19 @@ Read `book/outline/scenes.yaml`, `book/outline/acts.md`, `book/bible/premise.md`
 
 A check named in `book.waivers` (written by the author) is reported as waived and never fails.
 
+The file cannot be checked at all (exit 2) when scenes.yaml is missing, is not UTF-8, does not parse, repeats a key, or `book` / `book.waivers` is not a mapping. Report that to the author with the line it names; it is not a FAIL and not a PASS.
+
 ## Errors (any one blocks drafting)
 
 | Check id | Fails when |
 |---|---|
+| `book_meta` | `book.base_genre` in scenes.yaml differs from premise.md "Base genre"; `book.structure` differs from premise.md "Structural model" (arc when premise.md declares none); or the premise names a model other than arc / kishotenketsu / alison. premise.md always decides genre and structure |
 | `fields` | A scene is missing any of `id`, `chapter`, `pov`, `goal`, `conflict`, `turn`, `outcome`, `value_shift`, `word_target`; `chapter` is not a whole number; `word_target` is not a positive number; `status` is not planned / drafted / revised / locked |
 | `ids` | An id is not `chNN-sNN`, its chapter number differs from `chapter`, or two scenes share an id |
 | `order` | A scene's chapter is lower than an earlier scene's (the manifest is reading order) |
 | `outcome` | Outcome does not start with `yes-but` or `no-and` (scenes flagged `sequel` are exempt) |
 | `entities` | A `pov` or `characters` entry matches no character sheet: not the file slug, the `#` heading, a listed `- Also known as:` alias, or an unambiguous first name (accents ignored: Häkkinen = hakkinen) |
-| `names` | A character name contains a banned name from `style.md` → "Banned names" (or the default list: Elias, Elara, Mara, Elena, Kael, Kaelen, Lyra, Aria, Sera, Seraphina, Theron, Orion, Silas, Aris, Voss, Vance, Thorne, Blackwood, Marcus, Sarah, Chloe, Lily) and the name does not appear under `## ⚓ Anchored` in `premise.md` |
+| `names` | A character name contains a banned name from `style.md` → "Banned names" (or the default list: Elias, Elara, Mara, Elena, Kael, Kaelen, Lyra, Aria, Sera, Seraphina, Theron, Orion, Silas, Aris, Voss, Vance, Thorne, Blackwood, Marcus, Sarah, Chloe, Lily) and the name does not appear in any ⚓ section of `premise.md` (HTML comments do not count); or a name contains an invisible formatting character or mixes alphabets (a Cyrillic "Е" inside a Latin name) |
 | `beats` | Arc structure only: no scene carries one of `inciting`, `doorway`, `pinch_1`, `midpoint`, `pinch_2`, `all_is_lost`, `climax` (in a mystery `inciting_crime` counts as inciting and `exposure` as climax) |
 | `climax_placement` | Arc only: the first climax scene ends before 80% |
 | `beat_order` | Arc only: those seven beats are not in that reading order |

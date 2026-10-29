@@ -150,11 +150,93 @@ class ValidateOutline(unittest.TestCase):
         self.assertIn("compromise", checks(out, "waived"))
 
     def test_non_arc_structure_skips_beats(self):
+        self.replace(self.book / "bible/premise.md", "- Subgenre", "- Structural model: kishotenketsu\n- Subgenre")
         self.replace(self.scenes, "structure: arc", "structure: kishotenketsu")
         self.replace(self.scenes, 'beat: "pinch_2"', 'beat: ""')
         code, out, _ = run(self.book)
         self.assertNotIn("beats", checks(out))
         self.assertIn("structure", checks(out, "warning"))
+
+    def test_structure_only_in_manifest_is_an_error(self):
+        self.replace(self.scenes, "structure: arc", "structure: kishotenketsu")
+        self.replace(self.scenes, 'beat: "pinch_2"', 'beat: ""')
+        out = self.assert_error("book_meta")
+        self.assertIn("beats", checks(out))  # arc checks still apply
+
+    def test_manifest_genre_cannot_override_premise(self):
+        self.replace(self.scenes, "base_genre: mystery", "base_genre: thriller")
+        self.replace(self.scenes, "clues_paid: [C01, C02]", "clues_paid: [C01, C02, C99]")
+        out = self.assert_error("book_meta")
+        self.assertIn("fair_play", checks(out))  # mystery checks still run
+
+    def test_genre_placeholders_and_empty_lines(self):
+        premise = self.book / "bible/premise.md"
+        self.replace(premise, "- Subgenre / variant: Finnish crime", "- Subgenre / variant: (e.g. Nordic noir, cozy, procedural)")
+        code, out, _ = run(self.book)
+        self.assertFalse(out["stats"]["nordic"])
+        self.replace(premise, "- Base genre: mystery", "- Base genre:")
+        self.replace(self.scenes, "base_genre: mystery", 'base_genre: ""')
+        code, out, _ = run(self.book)
+        self.assertFalse(out["stats"]["mystery"])
+
+    def test_bad_shapes_exit_2_not_1(self):
+        for old, new in (("  waivers: {}", "  waivers: [open_thread]"), ("  waivers: {}", "  waivers: open_thread")):
+            with self.subTest(new=new):
+                text = self.scenes.read_text(encoding="utf-8")
+                self.scenes.write_text(text.replace(old, new), encoding="utf-8")
+                code, out, err = run(self.book)
+                self.assertEqual(code, 2, err)
+                self.assertTrue(out["unreadable"])
+                self.assertIn("waivers", err)
+                self.scenes.write_text(text, encoding="utf-8")
+        self.scenes.write_text("book: My Title\nscenes: []\n", encoding="utf-8")
+        code, _, err = run(self.book)
+        self.assertEqual(code, 2)
+        self.assertIn("'book' must be a mapping", err)
+
+    def test_duplicate_keys_refused(self):
+        self.replace(self.scenes, "\nscenes:", '\n  waivers: {compromise: "x"}\nscenes:')
+        code, _, err = run(self.book)
+        self.assertEqual(code, 2)
+        self.assertIn("duplicate key", err)
+
+    def test_non_utf8_bible_file_does_not_crash(self):
+        (self.book / "bible/characters/tuomas-lehto.md").write_bytes("# Tuomas Lehto\n- caf\xe9\n".encode("latin-1"))
+        code, out, err = run(self.book)
+        self.assertEqual(code, 0, err)
+
+    def test_lookalike_letters_in_names(self):
+        (self.book / "bible/characters/elias-koski.md").write_text("# Еlias Koski\n", encoding="utf-8")
+        out = self.assert_error("names")
+        self.assertTrue(any("mixes letters" in f["message"] for f in out["findings"]))
+        (self.book / "bible/characters/elias-koski.md").write_text("# Eli​as Koski\n", encoding="utf-8")
+        out = self.assert_error("names")
+        self.assertTrue(any("invisible" in f["message"] for f in out["findings"]))
+
+    def test_every_anchored_section_counts_but_comments_do_not(self):
+        (self.book / "bible/characters/elias-koski.md").write_text("# Elias Koski\n", encoding="utf-8")
+        premise = self.book / "bible/premise.md"
+        self.replace(premise, "## ⚓ Anchored\n", "## ⚓ Anchored\n<!-- Elias approved -->\n")
+        self.assert_error("names")
+        premise.write_text(premise.read_text(encoding="utf-8") + "\n## ⚓ Anchored names\n- Elias stays.\n",
+                           encoding="utf-8")
+        code, out, _ = run(self.book)
+        self.assertNotIn("names", checks(out))
+
+    def test_late_compromise_ok_when_an_earlier_one_exists(self):
+        self.replace(self.scenes, "flags: [open_thread]", "flags: [open_thread, compromise]")
+        code, out, _ = run(self.book)
+        self.assertNotIn("compromise", checks(out, "warning"))
+        self.replace(self.scenes, "flags: [compromise]", "flags: []")
+        code, out, _ = run(self.book)
+        self.assertIn("compromise", checks(out, "warning"))
+
+    def test_weekdays_are_not_story_days(self):
+        text = self.scenes.read_text(encoding="utf-8")
+        text = re.sub(r'time: "Day \d+, (07:\d\d)"', r'time: "Monday \1"', text)
+        self.scenes.write_text(text.replace("flags: [nonlinear]", "flags: []"), encoding="utf-8")
+        code, out, _ = run(self.book)
+        self.assertIn("nonlinear", checks(out, "warning"))
 
     def test_uniform_chapters_warn(self):
         # Give every chapter the same total, whatever its scene count.
