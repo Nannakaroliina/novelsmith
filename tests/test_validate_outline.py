@@ -435,18 +435,23 @@ class MiniYaml(unittest.TestCase):
         ("m: {a: 1, b: [x, {c: d}],}\n", {"m": {"a": 1, "b": ["x", {"c": "d"}]}}),
         ("q: {\"k\": v, 'j': [1, 2]}\n", {"q": {"k": "v", "j": [1, 2]}}), ("e: [ ]\n", {"e": []}),
         ("title: 'Don''t Look Back'\n", {"title": "Don't Look Back"}),
+        ("a: {k: , j: 1}\n", {"a": {"k": None, "j": 1}}), ("a: {k:}\n", {"a": {"k": None}}),
+        ("a: [\"who?\"]\n", {"a": ["who?"]}), ("a: who?\n", {"a": "who?"}),
     ]
 
     # The fallback refuses these; PyYAML reads them, so they are not silent disagreements.
     FALLBACK_REFUSES = ['s: "\\x41"\n', 's: "\\e"\n', "- - a\n", "d: 2026-10-29\n", "a: |+\n  x\n",
-                        "a: >\n  x\n    more\n", '"waiv\\x65rs": 1\n', "1: x\n", "yes: x\n", "a: {k: }\n"]
+                        "a: >\n  x\n    more\n", '"waiv\\x65rs": 1\n', "1: x\n", "yes: x\n",
+                        "book: {?waivers: {open_thread: x}}\n", "a: [?a]\n"]
 
     # Both paths must refuse these with YAMLError (never another exception: the guard depends on it).
     BOTH_REFUSE = ["a: &x [1]\nb: *x\n", "x: 0x_\n", "x: 0b_\n", "d: 2026-02-30\n", "? [a]\n: b\n",
-                   "x: " + "[" * 2000 + "]" * 2000 + "\n", "n: " + "9" * 5000 + "\n", "a: 1\na: 2\n",
+                   "x: " + "[" * 2000 + "]" * 2000 + "\n", "a: 1\na: 2\n",
                    "w: {a: 1, a: 2}\n", "book: {waivers: {x: y}, waivers: {}}\n", "x: " + "[" * 70 + "]" * 70 + "\n",
                    "a: [x, , y]\n", "a: [x] y\n", "title: 'Don't Look Back'\n", "'Don't': x\n",
-                   "b:\n  <<: {t: X}\n"]
+                   "b:\n  <<: {t: X}\n", "a: [who?]\n", "a: {k?: v}\n", "a: [a?b]\n"]
+    if hasattr(sys, "get_int_max_str_digits"):  # Python 3.11+ caps int() at 4,300 digits; 3.9 reads it
+        BOTH_REFUSE.append("n: " + "9" * 5000 + "\n")
 
     def test_fallback_matches_pinned_pyyaml_results(self):
         for text, expected in self.PARITY_CASES:

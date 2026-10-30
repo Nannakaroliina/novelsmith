@@ -275,7 +275,11 @@ def _flow_node(s, i, line, depth):
                 key, i = _flow_key(s, i, line)
                 if key in out:
                     raise YAMLError(f"duplicate key {key!r}", line)
-                out[key], i = _flow_node(s, _skip_space(s, i), line, depth + 1)
+                i = _skip_space(s, i)
+                if i < len(s) and s[i] in ",}":
+                    out[key] = None  # {k: } and {k:} read as null, as in PyYAML
+                else:
+                    out[key], i = _flow_node(s, i, line, depth + 1)
             i = _skip_space(s, i)
             if i < len(s) and s[i] == ",":
                 i = _skip_space(s, i + 1)  # a comma before the closing bracket is allowed, as in PyYAML
@@ -292,7 +296,15 @@ def _flow_node(s, i, line, depth):
     text = s[i:j].strip()
     if not text:
         raise YAMLError(f"empty item in {s.strip()!r}", line)
+    _no_flow_question(text, line)
     return _scalar(text, line, depth), j
+
+
+def _no_flow_question(text, line):
+    """Inside [ … ] and { … } PyYAML reads '?' as the start of a key, so an unquoted '?' would mean something else
+    to it (a hidden '{?waivers: …}' key, for one)."""
+    if "?" in text:
+        raise YAMLError(f"quote {text!r}: inside [ … ] or {{ … }} a '?' must be in quotes", line)
 
 
 def _flow_key(s, i, line):
@@ -313,6 +325,7 @@ def _flow_key(s, i, line):
     text = s[i:j].strip()
     if j >= len(s) or not text:
         raise YAMLError(f"cannot read flow map entry {s[i:].strip()!r}", line)
+    _no_flow_question(text, line)
     return _key_text(text, line), j + 1
 
 
