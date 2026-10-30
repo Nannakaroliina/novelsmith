@@ -1,13 +1,13 @@
 {
-  "description": "Canon guard: protects the author's anchored decisions, keeps each novelsmith agent writing only its own files under book/, and keeps subagents' shell and MCP tools off the book. Stays silent (allows the write) where python3 or the script is unavailable, so it never blocks writing; /novelsmith:doctor reports whether it is active.",
+  "description": "Canon guard: protects the author's anchored decisions, keeps each novelsmith agent writing only its own files under book/, and keeps subagents' shell, MCP and other tools off the book. It runs on every tool call and returns at once for anything but a file write or a subagent's call. Stays silent (allows the call) where python3 or the script is unavailable, including macOS's python3 placeholder before the developer tools are installed, so it never blocks writing; /novelsmith:doctor reports whether it is active.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -V >/dev/null 2>&1 && [ -f \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\" ] || exit 0; python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\"",
+            "command": "[ \"$(command -v python3)\" = /usr/bin/python3 ] && [ \"$(uname)\" = Darwin ] && ! xcode-select -p >/dev/null 2>&1 && exit 0; python3 -V >/dev/null 2>&1 && [ -f \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\" ] || exit 0; python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\"",
             "timeout": 10
           }
         ]

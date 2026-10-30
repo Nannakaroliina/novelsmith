@@ -63,7 +63,8 @@ class ValidateOutline(unittest.TestCase):
     def test_genre_words_are_whole_and_the_last_names_the_base(self):
         premise = self.book / "bible/premise.md"
         for genre, mystery in (("cozy fantasy", False), ("historical (Crimean War)", False), ("cozy mystery", True),
-                               ("crime fiction", True)):
+                               ("crime fiction", True), ("crime thriller", False), ("cozy sci-fi", False),
+                               ("cozy science fiction", False), ("fantasy (cozy)", False), ("Finnish crime", True)):
             with self.subTest(genre=genre):
                 text = premise.read_text(encoding="utf-8")
                 premise.write_text(re.sub(r"- Base genre: .*", f"- Base genre: {genre}", text), encoding="utf-8")
@@ -71,6 +72,35 @@ class ValidateOutline(unittest.TestCase):
                              .group(), f'  base_genre: "{genre}"')
                 code, out, err = run(self.book)
                 self.assertEqual(out["stats"]["mystery"], mystery, err)
+
+    def test_target_length_forms(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("validator", SCRIPT)
+        v = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(v)
+        for text, words in (("85,000 words", 85000), ("85 000", 85000), ("85.000 sanaa", 85000), ("85k", 85000),
+                            ("1.5k", 1500), ("80–90k words", 90000), ("80-90,000 words", 90000),
+                            ("80,000 to 90,000", 90000), ("85,000, 24 chapters", 85000), ("about a novel", None)):
+            with self.subTest(text=text):
+                self.assertEqual(v.premise_words(f"## Genre\n- Target length: {text}\n"), words)
+
+    def test_value_shift_check_is_linear(self):
+        import importlib.util
+        import time
+        spec = importlib.util.spec_from_file_location("validator", SCRIPT)
+        v = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(v)
+        start = time.monotonic()
+        self.assertFalse(v.is_shift("from " * 200_000))
+        self.assertLess(time.monotonic() - start, 1)
+        self.assertTrue(v.is_shift("from safety to exposure"))
+        self.assertFalse(v.is_shift("to safety from exposure"))
+
+    def test_banned_names_of_several_words(self):
+        self.replace(self.book / "bible/style.md", "Elias, Mara, Elara", "Elias, Mara, Elara, O'Connor, Mary-Jane")
+        (self.book / "bible/characters/siobhan.md").write_text("# Siobhan O'Connor\n", encoding="utf-8")
+        out = self.assert_error("names")
+        self.assertTrue(any("O'Connor" in f["message"] for f in out["findings"]))
 
     def test_target_length_in_the_premise_is_compared(self):
         premise = self.book / "bible/premise.md"

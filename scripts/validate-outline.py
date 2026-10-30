@@ -56,7 +56,8 @@ ARC_BEATS = [
 MYSTERY_ALIASES = {"inciting": {"inciting_crime"}, "climax": {"exposure"}}
 MYSTERY_WORDS = ("mystery", "crime", "detective", "noir", "procedural", "whodunit", "cozy")
 # In a compound label the last word names the base genre (genre skill), so "cozy fantasy" is a fantasy.
-OTHER_BASES = ("fantasy", "romance", "horror", "literary", "historical", "sf", "scifi", "kidlit", "erotica")
+OTHER_BASES = ("fantasy", "romance", "horror", "literary", "historical", "sf", "scifi", "fi", "science", "thriller",
+               "suspense", "kidlit", "erotica")
 NORDIC_WORDS = ("nordic", "finnish", "scandi", "scandinavian")
 NORDIC_SUBPLOTS = ("social", "criminal", "institution", "season")
 
@@ -68,7 +69,7 @@ DEFAULT_BANNED_NAMES = [
 
 ID_RE = re.compile(r"^ch(\d{2,3})-s(\d{2,3})$")
 OUTCOME_RE = re.compile(r"^\s*(yes-but|no-and)\b", re.I)
-SHIFT_RE = re.compile(r"\bfrom\b.+\bto\b", re.I)
+FROM_RE, TO_RE = re.compile(r"\bfrom\b", re.I), re.compile(r"\bto\b", re.I)
 DAY_RE = re.compile(r"\bday\s*(-?\d+)", re.I)
 STRUCTURES = {"arc", "kishotenketsu", "alison"}
 CLOCK_RE = re.compile(r"(\d{1,2}):(\d{2})")
@@ -253,7 +254,10 @@ def validate(book):
                   "premise.md decides the genre; copy it into scenes.yaml or ask the author to change the premise.")
     genre = premise_genre or manifest_genre
     genre_words = re.findall(r"[^\W\d_]+", genre)  # whole words: "Crimean" is not "crime"
-    is_mystery = any(w in MYSTERY_WORDS for w in genre_words) and genre_words[-1] not in OTHER_BASES
+    base_words = re.findall(r"[^\W\d_]+", re.split(r"[(,;]", genre)[0]) or genre_words  # "fantasy (cozy)"
+    if len(base_words) > 1 and base_words[-1] == "fiction":
+        base_words = base_words[:-1]  # "crime fiction", "science fiction"
+    is_mystery = any(w in MYSTERY_WORDS for w in genre_words) and base_words[-1] not in OTHER_BASES
     is_nordic = is_mystery and any(w in genre + " " + variant for w in NORDIC_WORDS)
     premise_structure = settings["structure"]
     manifest_structure = tag(meta.get("structure") or "")
@@ -322,7 +326,7 @@ def validate(book):
                       "A plain yes or no ends the tension; add the 'but' or the 'and'. Flag reaction scenes as sequel.")
         s["_outcome"] = (OUTCOME_RE.match(str(outcome or "")) or [None, ""])[1].lower()
         vs = s.get("value_shift")
-        if not blank(vs) and not SHIFT_RE.search(str(vs)):
+        if not blank(vs) and not is_shift(str(vs)):
             rep.warn("value_shift", f"value_shift should read 'from X to Y', got {str(vs)[:60]!r}", sid)
 
     # ---- entities -----------------------------------------------------------
@@ -344,9 +348,8 @@ def validate(book):
         used.update(str(p) for p in as_list(s.get("characters")) + as_list(s.get("pov")))
     hits = set()
     for name in used:
-        tokens = set(norm(name).split("-"))
-        for b in banned:
-            if norm(b) in tokens and norm(b) not in anchored_n.split("-"):
+        for b in banned:  # whole runs of words, so "O'Connor" and "Mary-Jane" match too
+            if f"-{norm(b)}-" in f"-{norm(name)}-" and f"-{norm(b)}-" not in f"-{anchored_n}-":
                 hits.add((b, name))
     for b, name in sorted(hits):
         rep.error("names", f"{name!r} uses the model-default name {b!r}", "characters",
@@ -562,14 +565,29 @@ def finite(x):
     return not isinstance(x, float) or math.isfinite(x)
 
 
+def is_shift(text):
+    """A 'from X to Y' value shift, found with two linear searches (one pattern with .+ is quadratic)."""
+    m = FROM_RE.search(text)
+    return bool(m and TO_RE.search(text, m.end() + 1))
+
+
+_WORD_COUNT = re.compile(r"(\d{1,3}(?:[,.\u00a0 ]\d{3})+|\d+(?:\.\d+)?)\s*([kK](?![^\W\d_]))?")
+
+
 def premise_words(premise):
-    """premise.md "Target length" as a number of words (85,000 / 85 000 / 85k), or None."""
+    """premise.md "Target length" as a number of words, or None: 85,000 / 85 000 / 85.000 / 85k / 1.5k, and for a
+    range (80–90k, 80,000 to 90,000) its upper end. Anything after the first number or range is ignored."""
     value = ns_book.field(strip_html_comments(premise), "Target length")
-    m = re.search(r"(\d[\d,.\s]{0,12})\s*([kK]\b)?", value)
-    if not m:
+    numbers = list(_WORD_COUNT.finditer(value))
+    if not numbers:
         return None
-    digits = re.sub(r"\D", "", m.group(1).split(".")[0] if m.group(2) else m.group(1))
-    words = int(digits) * (1000 if m.group(2) else 1) if digits else 0
+    pick = numbers[0]
+    between = re.match(r"\s*(?:[-–—]|to)\s*", value[pick.end():])
+    if between and len(numbers) > 1 and numbers[1].start() == pick.end() + between.end():
+        pick = numbers[1]
+    digits, k = pick.group(1), pick.group(2)
+    n = float(digits) if re.fullmatch(r"\d+\.\d+", digits) and k else float(re.sub(r"\D", "", digits))
+    words = int(n * (1000 if k else 1))
     return words if 0 < words <= 10_000_000 else None
 
 

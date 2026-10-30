@@ -73,6 +73,12 @@ VALIDATOR = HERE / "validate-outline.py"
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
 SHELL_TOOLS = ("Bash", "PowerShell")
 NOTEBOOK_TOOL = "NotebookEdit"
+# Tools that only read, ask or plan, which subagents may use freely. In a book project any other tool a
+# subagent calls, including ones Claude Code adds later, is checked (rules 1-4) or denied.
+SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "NotebookRead", "TodoWrite", "TodoRead", "WebFetch", "WebSearch",
+              "Skill", "ToolSearch", "AskUserQuestion", "Agent", "Task", "TaskOutput", "BashOutput",
+              "KillShell", "KillBash", "TaskStop", "SendMessage", "ListMcpResourcesTool", "ReadMcpResourceTool",
+              "EnterPlanMode", "ExitPlanMode"}
 PYTHONS = {"python3", "python"}
 DEADLINE = 6.0
 MAX_CHARS = 1_000_000
@@ -330,7 +336,8 @@ def decide(decision, reason):
 def is_validator_command(command, cwd):
     """True only for: python3 <this plugin's validate-outline.py> --book <dir> [--json]. Either path may be
     quoted, since a plugin folder can hold ~, ( ) or Windows backslashes; no shell syntax outside the quotes,
-    and no $, backquote or line break inside double quotes."""
+    no $, backquote or line break inside double quotes, and no backslash there that the shell would read as an
+    escape (before ", \\, $ or a backquote). The shell's own split of the command must agree, word for word."""
     m = VALIDATOR_COMMAND.fullmatch(command)
     if not m or m.group(1) not in PYTHONS:
         return False
@@ -339,12 +346,18 @@ def is_validator_command(command, cwd):
         if arg[0] == "'":
             bad = "\n" in arg or "\r" in arg
         elif arg[0] == '"':
-            bad = bool(re.search(r"[$`\n\r]", arg))
+            bad = bool(re.search(r'[$`\n\r]|\\(?=["\\$`])', arg))
         else:
             bad = bool(SHELL_META.search(arg))
         if bad:
             return False
         args.append(arg[1:-1] if arg[0] in "\"'" else arg)
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if words != [m.group(1), args[0], "--book", args[1]] + (["--json"] if m.group(4) else []):
+        return False  # the shell would read other words than the guard checked
     script = Path(args[0]) if os.path.isabs(args[0]) else cwd / args[0]
     try:
         return script.resolve().samefile(VALIDATOR)
@@ -380,10 +393,9 @@ def check_bash(command, agent, ours, short, cwd, book_root):
 
 
 def needs_check(tool, agent):
-    """Whether the hook must run the checks: every file write, and a subagent's shell, notebook and MCP calls."""
+    """Whether the hook must run the checks: every file write, and any subagent call but a known read."""
     tool = str(tool)
-    return tool in WRITE_TOOLS or (bool(agent) and (
-        tool in SHELL_TOOLS or tool == NOTEBOOK_TOOL or tool.startswith("mcp__")))
+    return tool in WRITE_TOOLS or (bool(agent) and tool not in SAFE_TOOLS)
 
 
 def mcp_reads_only(tool):
@@ -413,7 +425,9 @@ def main(data):
 
     agent = (data.get("agent_type") or "").strip()
     short = agent.split(":")[-1] if agent else ""
-    ours = agent.startswith("novelsmith:") or (short in AGENT_SCOPES and ":" not in agent)
+    # A bare name ("outliner") is taken as novelsmith's only in a book project: elsewhere it is someone else's.
+    ours = agent.startswith("novelsmith:") or (short in AGENT_SCOPES and ":" not in agent
+                                               and is_book_project(book_root))
 
     # Rule 3: the shell.
     if tool == "Bash":
@@ -427,6 +441,10 @@ def main(data):
         return check_mcp(tool, agent, book_root)
 
     if tool not in WRITE_TOOLS + (NOTEBOOK_TOOL,):
+        if agent and tool not in SAFE_TOOLS and (ours or is_book_project(book_root)):
+            return decide("deny", f"novelsmith: in a book project, subagents may use only tools the canon guard "
+                                  f"knows; {tool} could change book files it cannot check. Use the Read, Write and "
+                                  f"Edit tools, or report what you need.")
         return 0
     raw = inp.get("notebook_path" if tool == NOTEBOOK_TOOL else "file_path")
     if not raw:
@@ -487,7 +505,7 @@ def main(data):
         before, bad_old = waivers_of(old)
         after, bad_new = waivers_of(new)
         if bad_new:
-            if agent:
+            if agent or before or (bad_old and waivers_doubt(old)):
                 problems.append(f"book/{rel}, which {bad_new} after this change, so its waivers cannot be checked")
         elif bad_old:
             # An unreadable old file may be repaired, unless it may hold waivers: the repair could not be
@@ -555,9 +573,10 @@ def writes_book(payload):
 
 def cli(raw):
     """The hook: the checks run in a child process and its decision is passed on. Returns the exit code."""
-    payload = {}
+    payload, parsed = {}, False
     try:
         payload = json.loads(raw.decode("utf-8"))
+        parsed = True
         if needs_check(payload.get("tool_name", ""), payload.get("agent_type")):
             sys.stdout.buffer.write(run(raw))  # the author's own shell and MCP calls need no check
         return 0
@@ -566,6 +585,12 @@ def cli(raw):
             payload = {}
         tool, agent = payload.get("tool_name", ""), payload.get("agent_type")
         why = f"{type(exc).__name__}: {exc}"
+        if not parsed:  # nothing could be read (too deeply nested, not UTF-8): go by the raw text
+            agent = agent or b'"agent_type"' in raw
+            if not agent and b'"file_path"' in raw:
+                decide("ask", f"novelsmith: the canon guard could not read this call ({why}). Allow it only if "
+                              f"you asked for this change.")
+                return 0
         if agent and needs_check(tool, agent):
             # A subagent's call that cannot be checked is denied, not waved through.
             decide("deny", f"novelsmith: the canon guard could not check this call ({why}), so it is denied for "

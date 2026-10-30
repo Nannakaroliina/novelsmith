@@ -861,6 +861,79 @@ class GuardCanon(unittest.TestCase):
         finally:
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
 
+    # --- Round 8 -------------------------------------------------------------------------------
+    def test_validator_path_may_not_end_in_an_escaping_backslash(self):
+        twin = self.project / "plugin/scripts"
+        twin.mkdir(parents=True)
+        try:
+            os.link(ROOT / "scripts/validate-outline.py", twin / "validate-outline.py\\")
+        except OSError:
+            self.skipTest("cannot hard-link here")
+        # Bash reads \" as a quote inside the string, so the rest would run as a second command
+        self.assertEqual(self.bash(f'python3 "{twin}/validate-outline.py\\" --book "; echo INJECTED #"'), "deny")
+        self.assertEqual(self.bash(f'python3 "{twin}/validate-outline.py\\\\" --book book'), "deny")
+
+    def test_tools_the_guard_does_not_know_are_denied_to_subagents(self):
+        monitor = {"command": "until false; do sed -i x book/bible/premise.md; done"}
+        self.assertEqual(self.hook("Monitor", None, agent="general-purpose", tool_input_override=monitor), "deny")
+        self.assertEqual(self.hook("Monitor", None, agent="novelsmith:outliner", tool_input_override=monitor), "deny")
+        self.assertIsNone(self.hook("Monitor", None, tool_input_override=monitor))  # the author's own
+        for tool in ("Read", "Grep", "WebSearch", "TodoWrite"):
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.hook(tool, None, agent="general-purpose", tool_input_override={"x": "y"}))
+        import shutil
+        shutil.rmtree(self.book)
+        self.assertIsNone(self.hook("Monitor", None, agent="general-purpose", tool_input_override=monitor))
+
+    def test_a_bare_agent_name_is_novelsmiths_only_in_a_book_project(self):
+        import shutil
+        shutil.rmtree(self.book)
+        self.assertIsNone(self.hook("Write", "src/app.py", agent="outliner", content="x"))
+        self.assertIsNone(self.bash("git status", agent="outliner"))
+        self.assertEqual(self.hook("Write", "src/app.py", agent="novelsmith:outliner", content="x"), "deny")
+
+    def test_input_that_cannot_be_read_is_judged_by_its_text(self):
+        deep = "[" * 200_000 + "]" * 200_000
+        for raw, decision, code in (
+                ('{"tool_name": "mcp__fs__write_file", "agent_type": "general-purpose", "tool_input": {"x": %s}}'
+                 % deep, "deny", 0),
+                (b'{"tool_name": "Write", "agent_type": "general-purpose", "tool_input": {"x": "\xff"}}', "deny", 0),
+                ('{"tool_name": "Write", "tool_input": {"file_path": "book/bible/premise.md", "x": %s}}' % deep,
+                 "ask", 0),
+                ("not json", None, 1)):
+            with self.subTest(raw=raw[:60]):
+                data = raw if isinstance(raw, bytes) else raw.encode()
+                p = subprocess.run([sys.executable, str(SCRIPT)], input=data, capture_output=True,
+                                   env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.project)})
+                self.assertEqual(p.returncode, code, p.stderr)
+                got = json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"] if p.stdout.strip() else None
+                self.assertEqual(got, decision)
+
+    def test_authors_unreadable_rewrite_that_drops_waivers_is_asked_about(self):
+        scenes = self.book / "outline/scenes.yaml"
+        good = scenes.read_text(encoding="utf-8")
+        waived = good.replace("  waivers: {}", '  waivers: {open_thread: "left open"}')
+        scenes.write_text(waived, encoding="utf-8")
+        self.assertEqual(self.hook("Write", "book/outline/scenes.yaml",
+                                   content=good.replace("turn: turn 3", "turn: a: b")), "ask")
+
+    def test_line_ending_tricks_reach_the_author_and_multiedit(self):
+        scenes = self.book / "outline/scenes.yaml"
+        scenes.write_bytes(scenes.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"))
+        plant = dict(old_string="\n  target_words", new_string="  waivers: {open_thread: x}\n  target_words")
+        self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", **plant), "ask")
+        self.assertEqual(self.hook("MultiEdit", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   edits=[plant]), "deny")
+        self.assertEqual(self.hook("MultiEdit", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   edits=[{"old_string": "word_target: 1800", "new_string": "word_target: 1\r"}]),
+                         "deny")
+        premise = self.book / "bible/premise.md"
+        culprit = "the harbour master's sister."
+        premise.write_bytes(self.premise_text().replace("# Premise\n", f"# Premise\nnote: {culprit}\r")
+                            .encode("utf-8"))
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", old_string=culprit + "\n",
+                                   new_string="the ferryman.\n"), "ask")
+
 
 class HookCommand(unittest.TestCase):
     """Run the exact command string from hooks/hooks.json through sh."""
@@ -887,8 +960,7 @@ class HookCommand(unittest.TestCase):
 
     def test_matcher_covers_every_guarded_tool(self):
         matcher = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["matcher"]
-        g = guard_module()
-        self.assertEqual(set(matcher.split("|")), set(g.WRITE_TOOLS) | set(g.SHELL_TOOLS) | {g.NOTEBOOK_TOOL, "mcp__.*"})
+        self.assertEqual(matcher, ".*")  # every tool: an unknown one is denied to subagents, not missed
 
     def test_deadline_leaves_room_before_the_hook_timeout(self):
         hook = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0]

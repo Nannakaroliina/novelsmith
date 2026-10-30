@@ -42,7 +42,7 @@ Avoid model defaults in every option: no grieving protagonist returning to a coa
 
 ## Mode: develop
 
-Build the direction the author chose (named in the delegation message, or recorded under `## ⚓ Anchored`).
+Build the direction the author chose (named in the delegation message, recorded under `## ⚓ Anchored`, or the ending the author wrote themselves under "The ending" in `premise.md`).
 
 1. **`book/bible/premise.md`**: fill every section except `## ⚓ Anchored`, which you never edit (a hook blocks it). Keep the author's wording where it exists. The controlling idea is a cause-and-effect sentence; the counter-idea must be strong enough to win scenes. The hook is the mirror of the ending. Put anything you had to assume under "Open questions for the author", one line each, so the author can confirm or overturn it.
 2. **`book/outline/acts.md`**: fill the "What happens" column of the beat table for the declared structural model (craft-structure §0; the arc model unless `premise.md` declares another). Leave the "Scene id" column empty: the outliner fills it. Each beat row must pass its reviewer test in craft-structure §1 (for example the doorway names an action that cannot be undone; the midpoint states what the protagonist now understands *and* what they now do differently). Fill at least one subplot with its own want, turn and function. List at least one thread the book leaves open on purpose. For a mystery, complete the mystery overlay from the genre reference, including the false solution and the low point where it collapses; for a Nordic/Finnish variant, add its four obligatory scenes and the investigator's private-strain beats at ~25/50/75%.
