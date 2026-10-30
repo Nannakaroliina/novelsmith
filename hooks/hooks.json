@@ -1,9 +1,9 @@
 {
-  "description": "Canon guard: protects the author's anchored decisions and keeps each novelsmith agent writing only its own files under book/. Stays silent (allows the write) where python3 or the script is unavailable, so it never blocks writing; /novelsmith:doctor reports whether it is active.",
+  "description": "Canon guard: protects the author's anchored decisions, keeps each novelsmith agent writing only its own files under book/, and keeps subagents' shell and MCP tools off the book. Stays silent (allows the write) where python3 or the script is unavailable, so it never blocks writing; /novelsmith:doctor reports whether it is active.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|Bash",
+        "matcher": "Write|Edit|MultiEdit|Bash|mcp__.*",
         "hooks": [
           {
             "type": "command",

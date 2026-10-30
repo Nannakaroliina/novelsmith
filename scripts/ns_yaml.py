@@ -1,8 +1,9 @@
 """Load the YAML that novelsmith's book files use, with or without PyYAML.
 
 PyYAML is used when it is installed. Otherwise a small parser handles the subset
-the templates use: block mappings and sequences, flow lists and maps on one line,
-quoted and plain scalars, numbers, booleans, null, and | / > block scalars.
+the templates use: block mappings and sequences, flow lists and maps on one line
+(read in a single pass, so even adversarial input is linear), quoted and plain
+scalars, numbers, booleans, null, and | / > block scalars.
 Anything outside that subset raises YAMLError with a line number, so the author
 learns to install PyYAML rather than getting a silently wrong manifest.
 
@@ -84,14 +85,23 @@ def _describe(exc):
     return message
 
 
+def _error_line(exc):
+    """The line to fix. For an unclosed quote, a key missing its ':' or an unclosed [ … ], PyYAML's problem
+    mark is where it gave up (often the end of the file); the context mark is where that value starts."""
+    context = getattr(exc, "context", None) or ""
+    mark = getattr(exc, "context_mark", None)
+    if not (mark and (context.startswith("while scanning a") or context.startswith("while parsing a flow"))):
+        mark = getattr(exc, "problem_mark", None)
+    return mark.line + 1 if mark else None
+
+
 def load(text):
     text = text[1:] if text.startswith("\ufeff") else text  # a byte-order mark, which PyYAML skips too
     if _pyyaml is not None and not _FORCE_FALLBACK:
         try:
             return _pyyaml.load(text, Loader=_StrictLoader)
         except _pyyaml.YAMLError as exc:
-            mark = getattr(exc, "problem_mark", None)
-            raise YAMLError(_describe(exc), mark.line + 1 if mark else None) from exc
+            raise YAMLError(_describe(exc), _error_line(exc)) from exc
         except _CRASHES as exc:
             raise YAMLError(f"cannot read a value ({type(exc).__name__}: {exc})") from exc
     try:
@@ -201,29 +211,14 @@ def _strip_comment(s):
     return s.rstrip()
 
 
-def _split_top(s, sep):
-    """Split on sep outside quotes and brackets."""
-    parts, depth, start, i, prev = [], 0, 0, 0, None
-    while i < len(s):
-        ch = s[i]
-        if ch in "\"'" and _opens_quote(prev):
-            end = _quote_end(s, i)
-            i, prev = (len(s) if end == -1 else end + 1), ch
-            continue
-        if ch in "[{":
-            depth += 1
-        elif ch in "]}":
-            depth -= 1
-        elif ch == sep and depth == 0:
-            parts.append(s[start:i])
-            start, prev = i + 1, ch
-            i += 1
-            continue
-        if ch not in " \t":
-            prev = ch
-        i += 1
-    parts.append(s[start:])
-    return parts
+def _key_text(text, line=None):
+    """A key as PyYAML would read it, or YAMLError."""
+    key = _scalar(text, line) if text[:1] in "\"'" else text
+    if text[:1] not in "\"'" and (text in ("<<", "=") or _scalar(text, line) != text):
+        raise YAMLError(f"quote the key {text!r}; PyYAML would not read it as text", line)
+    if not isinstance(key, str):
+        raise YAMLError(f"keys must be text, got {text!r}", line)
+    return key
 
 
 def _key_split(s):
@@ -238,40 +233,104 @@ def _key_split(s):
         return None
     while i < len(s):
         if s[i] == ":" and (i + 1 == len(s) or s[i + 1] == " "):
-            text = s[:i].strip()
-            key = _scalar(text, None) if text[:1] in "\"'" else text
-            if text[:1] not in "\"'" and _scalar(text, None) != text:
-                raise YAMLError(f"quote the key {text!r}; PyYAML would not read it as text")
-            if not isinstance(key, str):
-                raise YAMLError(f"keys must be text, got {text!r}")
-            return key, s[i + 1:].strip()
+            return _key_text(s[:i].strip()), s[i + 1:].strip()
         i += 1
     return None
 
 
-def _scalar(raw, line):
+_FLOW_STOP = ",[]{}"
+
+
+def _skip_space(s, i):
+    while i < len(s) and s[i] in " \t":
+        i += 1
+    return i
+
+
+def _flow(s, line, depth):
+    """A [ … ] or { … } value written on one line, read in a single pass (linear in its length)."""
+    value, i = _flow_node(s, 0, line, depth)
+    if _skip_space(s, i) != len(s):
+        raise YAMLError(f"unexpected text after the closing bracket: {s[i:].strip()!r}", line)
+    return value
+
+
+def _flow_node(s, i, line, depth):
+    if depth > MAX_DEPTH:
+        raise YAMLError(f"nested more than {MAX_DEPTH} levels deep", line)
+    ch = s[i] if i < len(s) else ""
+    if ch and ch in "[{":
+        close, out = ("]", []) if ch == "[" else ("}", {})
+        i = _skip_space(s, i + 1)
+        while True:
+            if i >= len(s):
+                raise YAMLError("put this [ … ] list on one line, or write it as '- item' lines" if ch == "[" else
+                                "put this { … } map on one line, or write it as 'key: value' lines", line)
+            if s[i] == close:
+                return out, i + 1
+            if ch == "[":
+                item, i = _flow_node(s, i, line, depth + 1)
+                out.append(item)
+            else:
+                key, i = _flow_key(s, i, line)
+                if key in out:
+                    raise YAMLError(f"duplicate key {key!r}", line)
+                out[key], i = _flow_node(s, _skip_space(s, i), line, depth + 1)
+            i = _skip_space(s, i)
+            if i < len(s) and s[i] == ",":
+                i = _skip_space(s, i + 1)  # a comma before the closing bracket is allowed, as in PyYAML
+            elif i < len(s) and s[i] != close:
+                raise YAMLError(f"expected ',' or '{close}' in {s.strip()!r}", line)
+    if ch and ch in "\"'":
+        end = _quote_end(s, i)
+        if end == -1:
+            raise YAMLError("unterminated quoted string", line)
+        return _scalar(s[i:end + 1], line, depth), end + 1
+    j = i
+    while j < len(s) and s[j] not in _FLOW_STOP:
+        j += 1
+    text = s[i:j].strip()
+    if not text:
+        raise YAMLError(f"empty item in {s.strip()!r}", line)
+    return _scalar(text, line, depth), j
+
+
+def _flow_key(s, i, line):
+    """The key of a flow map entry starting at s[i], and the index after its ':'."""
+    if s[i] in "\"'":
+        end = _quote_end(s, i)
+        if end == -1:
+            raise YAMLError("unterminated quoted key", line)
+        text, j = s[i:end + 1], _skip_space(s, end + 1)
+        if j >= len(s) or s[j] != ":":
+            raise YAMLError(f"expected ':' after the key {text}", line)
+        return _key_text(text, line), j + 1
+    j = i
+    while j < len(s) and not (s[j] == ":" and (j + 1 == len(s) or s[j + 1] in " \t" + _FLOW_STOP)):
+        if s[j] in _FLOW_STOP:
+            raise YAMLError(f"cannot read flow map entry {s[i:j + 1].strip()!r}", line)
+        j += 1
+    text = s[i:j].strip()
+    if j >= len(s) or not text:
+        raise YAMLError(f"cannot read flow map entry {s[i:].strip()!r}", line)
+    return _key_text(text, line), j + 1
+
+
+def _scalar(raw, line, depth=1):
+    """A value on one line; depth is how deeply this value is nested (refused past MAX_DEPTH)."""
     s = raw.strip()
+    if depth > MAX_DEPTH:
+        raise YAMLError(f"nested more than {MAX_DEPTH} levels deep", line)
     if s == "":
         return None
-    if s[0] == "[":
-        if not s.endswith("]"):
-            raise YAMLError("put this [ … ] list on one line, or write it as '- item' lines", line)
-        inner = s[1:-1].strip()
-        return [] if not inner else [_scalar(p, line) for p in _split_top(inner, ",")]
-    if s[0] == "{":
-        if not s.endswith("}"):
-            raise YAMLError("put this { … } map on one line, or write it as 'key: value' lines", line)
-        inner = s[1:-1].strip()
-        out = {}
-        for part in ([] if not inner else _split_top(inner, ",")):
-            kv = _key_split(part.strip())
-            if kv is None:
-                raise YAMLError(f"cannot read flow map entry {part.strip()!r}", line)
-            out[kv[0]] = _scalar(kv[1], line)
-        return out
+    if s[0] in "[{":
+        return _flow(s, line, depth)
+    if s[0] in "\"'" and _quote_end(s, 0) != len(s) - 1:
+        if _quote_end(s, 0) == -1:
+            raise YAMLError("unterminated quoted string", line)
+        raise YAMLError("text after the closing quote; inside single quotes write an apostrophe as '' "
+                        "(e.g. 'Don''t'), or use double quotes", line)
     if s[0] == '"':
-        if not s.endswith('"') or len(s) < 2:
-            raise YAMLError("unterminated double-quoted string", line)
         try:
             value = json.loads(s)
         except ValueError:
@@ -281,8 +340,6 @@ def _scalar(raw, line):
             raise YAMLError("unterminated double-quoted string", line)
         return value
     if s[0] == "'":
-        if not s.endswith("'") or len(s) < 2:
-            raise YAMLError("unterminated single-quoted string", line)
         return s[1:-1].replace("''", "'")
     if s in ("~", "null", "Null", "NULL"):
         return None
@@ -347,7 +404,7 @@ class _Parser:
             if _key_split(line[2]) is not None:
                 return self._map(indent)
             self.i += 1
-            return _scalar(line[2], line[0])
+            return _scalar(line[2], line[0], self._depth)
         finally:
             self._depth -= 1
 
@@ -370,10 +427,10 @@ class _Parser:
                 # "- key: value" opens a mapping indented to where "key" starts.
                 col = indent + (len(content) - len(item))
                 self.lines[self.i] = (n, col, item, raw)
-                out.append(self._map(col))
+                out.append(self._block(col))
             else:
                 self.i += 1
-                out.append(_scalar(item, n))
+                out.append(_scalar(item, n, self._depth + 1))
         return out
 
     def _map(self, indent):
@@ -405,7 +462,7 @@ class _Parser:
             elif rest[0] in "|>":
                 out[key] = self._block_scalar(indent, rest, n)
             else:
-                out[key] = _scalar(rest, n)
+                out[key] = _scalar(rest, n, self._depth + 1)
         return out
 
     def _block_scalar(self, indent, header, lineno):

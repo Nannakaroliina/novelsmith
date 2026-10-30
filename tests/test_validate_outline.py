@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,6 +19,14 @@ def run(book):
                        capture_output=True, text=True)
     out = json.loads(p.stdout) if p.stdout.strip() else None
     return p.returncode, out, p.stderr
+
+
+def need_pyyaml(test):
+    """Skip a PyYAML-only test, or fail it when NOVELSMITH_REQUIRE_PYYAML is set (the PyYAML check run)."""
+    if ns_yaml._pyyaml is None:
+        if os.environ.get("NOVELSMITH_REQUIRE_PYYAML"):
+            test.fail("PyYAML is not installed, but NOVELSMITH_REQUIRE_PYYAML is set")
+        test.skipTest("PyYAML not installed")
 
 
 def checks(out, level="error"):
@@ -385,10 +394,8 @@ class MiniYaml(unittest.TestCase):
     def test_fallback_matches_pyyaml_on_fixture(self):
         text = fixture.scenes_yaml()
         mine = ns_yaml._Parser(text).parse()
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML not installed")
+        need_pyyaml(self)
+        import yaml
         self.assertEqual(mine, yaml.safe_load(text))
 
     def test_template_parses(self):
@@ -424,15 +431,22 @@ class MiniYaml(unittest.TestCase):
         ("'it''s': 1\n", {"it's": 1}),
         ("title: 'a'' # b'' c'\n", {"title": "a' # b' c"}),
         ("tags: ['a'', b', c]\n", {"tags": ["a', b", "c"]}),
+        ("characters: [mara, theo,]\n", {"characters": ["mara", "theo"]}),
+        ("m: {a: 1, b: [x, {c: d}],}\n", {"m": {"a": 1, "b": ["x", {"c": "d"}]}}),
+        ("q: {\"k\": v, 'j': [1, 2]}\n", {"q": {"k": "v", "j": [1, 2]}}), ("e: [ ]\n", {"e": []}),
+        ("title: 'Don''t Look Back'\n", {"title": "Don't Look Back"}),
     ]
 
     # The fallback refuses these; PyYAML reads them, so they are not silent disagreements.
     FALLBACK_REFUSES = ['s: "\\x41"\n', 's: "\\e"\n', "- - a\n", "d: 2026-10-29\n", "a: |+\n  x\n",
-                        "a: >\n  x\n    more\n", '"waiv\\x65rs": 1\n', "1: x\n", "yes: x\n"]
+                        "a: >\n  x\n    more\n", '"waiv\\x65rs": 1\n', "1: x\n", "yes: x\n", "a: {k: }\n"]
 
     # Both paths must refuse these with YAMLError (never another exception: the guard depends on it).
     BOTH_REFUSE = ["a: &x [1]\nb: *x\n", "x: 0x_\n", "x: 0b_\n", "d: 2026-02-30\n", "? [a]\n: b\n",
-                   "x: " + "[" * 2000 + "]" * 2000 + "\n", "n: " + "9" * 5000 + "\n", "a: 1\na: 2\n"]
+                   "x: " + "[" * 2000 + "]" * 2000 + "\n", "n: " + "9" * 5000 + "\n", "a: 1\na: 2\n",
+                   "w: {a: 1, a: 2}\n", "book: {waivers: {x: y}, waivers: {}}\n", "x: " + "[" * 70 + "]" * 70 + "\n",
+                   "a: [x, , y]\n", "a: [x] y\n", "title: 'Don't Look Back'\n", "'Don't': x\n",
+                   "b:\n  <<: {t: X}\n"]
 
     def test_fallback_matches_pinned_pyyaml_results(self):
         for text, expected in self.PARITY_CASES:
@@ -440,10 +454,8 @@ class MiniYaml(unittest.TestCase):
                 self.assertEqual(ns_yaml._Parser(text).parse(), expected)
 
     def test_fallback_matches_live_pyyaml(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML not installed")
+        need_pyyaml(self)
+        import yaml
         for text, expected in self.PARITY_CASES:
             with self.subTest(text=text):
                 self.assertEqual(yaml.safe_load(text), expected)
@@ -455,8 +467,7 @@ class MiniYaml(unittest.TestCase):
                     ns_yaml._Parser(text).parse()
 
     def test_load_refuses_with_yamlerror_only(self):
-        if ns_yaml._pyyaml is None:
-            self.skipTest("PyYAML not installed: only the fallback arm can run (see test_fallback_refuses_all)")
+        need_pyyaml(self)
         for forced in (False, True):
             for text in self.BOTH_REFUSE:
                 with self.subTest(fallback=forced, text=text[:30]):
@@ -491,8 +502,7 @@ class MiniYaml(unittest.TestCase):
             ns_yaml._FORCE_FALLBACK = old
 
     def test_strict_loader(self):
-        if ns_yaml._pyyaml is None:
-            self.skipTest("PyYAML not installed")
+        need_pyyaml(self)
         self.assertEqual(ns_yaml.load("a: 1\nb: [x, y]\n"), {"a": 1, "b": ["x", "y"]})
         for text in ("a: 1\na: 2\n", "a: &x 1\nb: *x\n", "? [a]\n: b\n"):
             with self.subTest(text=text):
@@ -500,14 +510,33 @@ class MiniYaml(unittest.TestCase):
                     ns_yaml.load(text)
 
     def test_pyyaml_errors_are_one_line_with_a_hint(self):
-        if ns_yaml._pyyaml is None:
-            self.skipTest("PyYAML not installed")
+        need_pyyaml(self)
         with self.assertRaises(ns_yaml.YAMLError) as cm:
             ns_yaml.load("a: 1\nb: x: y\n")
         message = str(cm.exception)
         self.assertNotIn("\n", message)
         self.assertIn("line 2", message)
         self.assertIn("quote a value", message)
+
+    def test_pyyaml_errors_name_the_line_to_fix(self):
+        need_pyyaml(self)
+        cases = {'a: 1\nb: 2\nc: "open\nd: 4\ne: 5\n': 3,  # unclosed quote: PyYAML gives up at the end
+                 "a: 1\nb: 2\nc 3\nd: 4\n": 3,  # key without ':'
+                 "a: 1\nb: [x, y\nc: 2\n": 2,  # unclosed [
+                 "a: 1\ntitle: 'Don't Look'\nc: 2\n": 2,
+                 "a: 1\nb: x: y\nc: 2\n": 2}
+        for text, line in cases.items():
+            with self.subTest(text=text):
+                with self.assertRaises(ns_yaml.YAMLError) as cm:
+                    ns_yaml.load(text)
+                self.assertEqual(cm.exception.line, line)
+
+    def test_flow_parser_is_linear(self):
+        import time
+        text = "".join(f"k{n}: " + "[" * 60 + "]" * 60 + "\n" for n in range(2000))
+        start = time.monotonic()
+        ns_yaml._Parser(text).parse()
+        self.assertLess(time.monotonic() - start, 2)
 
     def test_unquoted_colon_rejected_like_pyyaml(self):
         with self.assertRaises(ns_yaml.YAMLError) as cm:

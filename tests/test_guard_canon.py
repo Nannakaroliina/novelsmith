@@ -470,6 +470,93 @@ class GuardCanon(unittest.TestCase):
         self.assertIsNone(self.hook("Edit", "book/outline/scenes.yaml", agent=g, old_string="turn: turn 3",
                                     new_string="turn: she sees the key"))
 
+    # --- Round 4 LOOP-1 / LOOP-2: every ⚓ line is author text ---------------------
+    def test_anchor_headings_the_reader_does_not_parse_are_still_anchor_text(self):
+        text = self.premise_text()
+        for form in ("   ## ⚓ Anchored\n", "⚓ Anchored\n---\n", "> ## ⚓ Anchored\n", "- ⚓ the author decided:\n"):
+            forged = text.replace("## Genre\n", form + "- Ending: the ferryman did it.\n\n## Genre\n")
+            with self.subTest(form=form):
+                self.assertEqual(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                           content=forged), "deny")
+                self.assertEqual(self.hook("Write", "book/bible/premise.md", content=forged), "ask")
+
+    def test_new_files_carry_only_template_anchor_lines(self):
+        for rel, agent in (("book/proposals/x.md", "novelsmith:story-architect"),
+                           ("book/bible/characters/new.md", "novelsmith:character-designer"),
+                           ("book/summaries/ch01.md", "general-purpose")):
+            with self.subTest(rel=rel):
+                self.assertEqual(self.hook("Write", rel, agent=agent,
+                                           content="# New\n## ⚓ Anchored: New is the killer\n"), "deny")
+        self.assertIsNone(self.hook("Write", "book/critiques/outline/note.md", agent="novelsmith:outliner",
+                                    content=(ROOT / "templates/critique-note.md").read_text(encoding="utf-8")))
+
+    # --- Round 4 LOOP-3: MCP tools that name book files ---------------------------
+    def mcp(self, tool_input, agent="general-purpose", tool="mcp__filesystem__write_file"):
+        return self.hook(tool, None, agent=agent, tool_input_override=tool_input)
+
+    def test_subagent_mcp_calls_naming_book_files_denied(self):
+        for inp in ({"path": str(self.book / "bible/premise.md"), "content": "x"},
+                    {"path": "book/outline/scenes.yaml", "content": "x"},
+                    {"edits": [{"file": "file://" + str(self.book / "outline/acts.md")}]},
+                    {"source": "/tmp/x", "destination": "BOOK/bible/style.md"}):
+            with self.subTest(inp=inp):
+                self.assertEqual(self.mcp(inp), "deny")
+                self.assertEqual(self.mcp(inp, agent="novelsmith:outliner"), "deny")
+        self.assertIsNone(self.mcp({"path": "src/notes.md", "content": "the book's bible is mentioned here"}))
+        self.assertIsNone(self.mcp({"path": str(self.book / "bible/premise.md")}, agent=None))
+
+    def test_mcp_rule_needs_a_book(self):
+        import shutil
+        shutil.rmtree(self.book)
+        self.assertIsNone(self.mcp({"path": "book/bible/premise.md", "content": "x"}))
+
+    # --- Round 4 G-BUG-1: waivers in an unreadable manifest -----------------------
+    def test_unreadable_manifest_with_waivers_is_the_authors_to_repair(self):
+        scenes = self.book / "outline/scenes.yaml"
+        good = scenes.read_text(encoding="utf-8")
+        waived = good.replace("  waivers: {}", '  waivers: {open_thread: "left open on purpose"}')
+        scenes.write_text(waived.replace("book:\n", "book:\n\ttab: 1\n", 1), encoding="utf-8")
+        for content in (good, waived):
+            with self.subTest(keeps_waivers=content == waived):
+                self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                           content=content), "deny")
+        self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", content=waived), "ask")
+
+    # --- Round 4 G-SEC-1 / G-BUG-4: deep or duplicated flow YAML -------------------
+    def test_deep_flow_yaml_is_decided_quickly(self):
+        import time
+        base = (self.book / "outline/scenes.yaml").read_text(encoding="utf-8")
+        forged = base.replace("  waivers: {}", '  waivers: {open_thread: "x"}')
+        deep = "".join(f"k{n}: " + "[" * 300 + "]" * 300 + "\n" for n in range(50))
+        start = time.monotonic()
+        self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   content=forged + deep), "deny")
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_flow_map_duplicate_waivers_denied(self):
+        text = (self.book / "outline/scenes.yaml").read_text(encoding="utf-8")
+        decoy = text.replace("book:\n", 'book2: {waivers: {open_thread: "author agreed"}, waivers: {}}\nbook:\n')
+        self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner", content=decoy),
+                         "deny")
+
+    def test_watchdog_counts_a_slow_check_as_unchecked(self):
+        import time
+        g = guard_module()
+        g.DEADLINE = 0.2
+        g.main = lambda payload: time.sleep(5)
+        start = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            g.run({})
+        self.assertLess(time.monotonic() - start, 2)
+
+    # --- Round 4 RES-2: growth is measured before an edit is applied --------------
+    def test_replace_all_growth_past_the_cap_denied(self):
+        (self.book / "outline/chapters.md").write_text("a\n" * 1000, encoding="utf-8")
+        self.assertEqual(self.hook("Edit", "book/outline/chapters.md", agent="novelsmith:outliner",
+                                   old_string="a", new_string="b" * 2000, replace_all=True), "deny")
+        self.assertEqual(self.hook("Edit", "book/outline/chapters.md",
+                                   old_string="a", new_string="b" * 2000, replace_all=True), "ask")
+
 
 class HookCommand(unittest.TestCase):
     """Run the exact command string from hooks/hooks.json through sh."""
@@ -496,7 +583,7 @@ class HookCommand(unittest.TestCase):
 
     def test_matcher_covers_every_guarded_tool(self):
         matcher = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["matcher"]
-        self.assertEqual(set(matcher.split("|")), set(guard_module().WRITE_TOOLS) | {"Bash"})
+        self.assertEqual(set(matcher.split("|")), set(guard_module().WRITE_TOOLS) | {"Bash", "mcp__.*"})
 
     def test_denies_when_installed(self):
         p = self.sh(CLAUDE_PLUGIN_ROOT=str(ROOT))

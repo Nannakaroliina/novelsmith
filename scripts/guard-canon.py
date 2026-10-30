@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""PreToolUse guard for Write/Edit/MultiEdit and Bash in a novelsmith book project.
+"""PreToolUse guard for Write/Edit/MultiEdit, Bash and MCP tools in a novelsmith book project.
 
 Rules, enforced here because plugin agents cannot carry their own hooks:
 
 1. Author-owned text: every heading containing ⚓ (with its body, HTML comments
-   included) in any book file, book.waivers in outline/scenes.yaml, and the
-   genre/structure settings of bible/premise.md. A subagent changing one is
-   denied; in the main conversation the author is asked to confirm.
+   included) in any book file, every other line containing ⚓ (so an indented,
+   underlined or quoted "heading" cannot pass as a decision), book.waivers in
+   outline/scenes.yaml, and the genre/structure settings of bible/premise.md.
+   A subagent changing one is denied; in the main conversation the author is
+   asked to confirm. A new file may carry only the ⚓ lines the templates have.
 2. Write scopes: each novelsmith agent may write only its own files under
    book/ (AGENT_SCOPES) and nothing outside book/; a novelsmith agent missing
    from AGENT_SCOPES may write nothing. Any other subagent may not write under
@@ -18,10 +20,14 @@ Rules, enforced here because plugin agents cannot carry their own hooks:
    denied: shell commands can write files these rules never see, and guessing
    from a command's text what it will touch cannot be made complete. The main
    conversation's shell is left to Claude Code's own permission prompts.
+4. MCP tools: a subagent's MCP call that names a path inside book/ is denied
+   (a filesystem server's write tools bypass rules 1 and 2); subagents read
+   book files with Read, Glob and Grep.
 
 The guard decides in linear time with its own deadline (DEADLINE seconds, below
-the hook's 10 s timeout) and size caps, because a hook that times out lets the
-call through. Line endings are normalised the way the readers see them, and
+the hook's 10 s timeout, kept by a watchdog thread on every platform) and size
+caps, because a hook that times out lets the call through. Line endings are
+normalised the way the readers see them, and
 paths are compared case-insensitively, because macOS and Windows treat
 book/Bible and book/bible as the same folder.
 
@@ -36,8 +42,8 @@ import json
 import os
 import re
 import shlex
-import signal
 import sys
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -56,16 +62,16 @@ CANON = ["bible/*"]
 SCENES = "outline/scenes.yaml"
 PREMISE = "bible/premise.md"
 VALIDATOR = HERE / "validate-outline.py"
+TEMPLATES = HERE.parent / "templates"
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
 DEADLINE = 6.0
 MAX_CHARS = 1_000_000
 MAX_LINE = 20_000
+MAX_PATH = 4096
 SHELL_META = re.compile(r"[;&|<>$`\\\n\r(){}\[\]*?!~#]")
 SAFE_READS = {"ls", "cat", "head", "tail", "wc", "grep", "pwd", "stat", "file", "diff"}
 
-
-class Unchecked(Exception):
-    """The guard could not finish checking this call."""
+_decided = threading.Lock()  # held once a decision is printed, so a late second one is dropped
 
 
 def fold(s):
@@ -94,19 +100,25 @@ def edits_of(tool, inp):
 
 
 def apply_edits(old, tool, inp):
-    """The file as it would be after the tool call, and whether every old_string matched exactly."""
+    """The file as it would be after the tool call (None if it would outgrow MAX_CHARS), and whether every
+    old_string matched exactly. Growth is computed before replacing, so a huge replace_all is never built."""
     if tool == "Write":
         return ns_book.normalize(inp.get("content", "")), True
     new, exact = old, True
     for e in edits_of(tool, inp):
         a, b = e.get("old_string", ""), e.get("new_string", "")
+        if not isinstance(a, str) or not isinstance(b, str):
+            raise TypeError("old_string and new_string must be text")
         if a == "":
             if new.strip() == "":
                 new = b  # Edit with an empty old_string fills an empty or new file
             continue
-        if a not in new:
+        count = new.count(a) if e.get("replace_all") else int(a in new)
+        if not count:
             exact = False  # the real tool may still match (it normalises curly quotes)
             continue
+        if len(new) + count * (len(b) - len(a)) > MAX_CHARS:
+            return None, exact
         new = new.replace(a, b) if e.get("replace_all") else new.replace(a, b, 1)
     return new, exact
 
@@ -129,6 +141,20 @@ def has_content(sections):
     return any(ns_book.strip_html_comments(body).strip() for _, body in sections)
 
 
+def anchor_lines(text):
+    """Every line containing ⚓, as written (indentation kept): the symbol marks author text wherever it is."""
+    return sorted(line.rstrip() for line in text.split("\n") if ns_book.ANCHOR in line)
+
+
+def template_anchor_lines():
+    """The ⚓ lines a file copied from a template may start with (e.g. the empty '## ⚓ Anchored' heading)."""
+    lines = set()
+    for p in TEMPLATES.glob("*"):
+        if p.is_file():
+            lines.update(anchor_lines(read(p)))
+    return lines
+
+
 def stray_waivers(node, where=()):
     """True if a 'waivers' key appears anywhere except book.waivers (a decoy for a human reader)."""
     if isinstance(node, dict):
@@ -149,8 +175,6 @@ def waivers_of(text):
             return None, "is not a mapping"
         if stray_waivers(data):
             return None, "has a 'waivers' key outside book"
-    except Unchecked:
-        raise
     except Exception as exc:  # any failure means the waivers cannot be checked
         return None, f"cannot be read safely ({exc})"
     book = data.get("book") or {}
@@ -160,11 +184,12 @@ def waivers_of(text):
 
 
 def decide(decision, reason):
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": decision,
-        "permissionDecisionReason": reason,
-    }}))
+    if _decided.acquire(blocking=False):
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }}), flush=True)
     return 0
 
 
@@ -212,6 +237,37 @@ def check_bash(command, agent, ours, short, cwd, book_root):
     return 0
 
 
+def strings_in(node, limit=10_000):
+    """The short one-line strings anywhere in a tool input (where an MCP tool would name its paths)."""
+    stack, out = [node], []
+    while stack and len(out) < limit:
+        x = stack.pop()
+        if isinstance(x, dict):
+            stack.extend(x.values())
+        elif isinstance(x, list):
+            stack.extend(x)
+        elif isinstance(x, str) and 0 < len(x) <= MAX_PATH and "\n" not in x:
+            out.append(x)
+    return out
+
+
+def check_mcp(tool, inp, agent, cwd, book_root):
+    if not agent or not book_root.is_dir():
+        return 0  # the author's own MCP calls: Claude Code's permission prompts apply
+    root = book_root.resolve()
+    for s in strings_in(inp):
+        raw = s[len("file://"):] if s.startswith("file://") else s
+        try:
+            path = Path(raw) if os.path.isabs(raw) else cwd / raw
+            rel = book_relative(path.resolve(), root)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if rel is not None:
+            return decide("deny", f"novelsmith: subagents may not use {tool} on book files ({s}); the canon guard "
+                                  "cannot check what it changes. Use the Read, Glob, Grep, Write and Edit tools.")
+    return 0
+
+
 def main(data):
     tool = data.get("tool_name", "")
     inp = data.get("tool_input") or {}
@@ -226,6 +282,8 @@ def main(data):
     # Rule 3: the shell.
     if tool == "Bash":
         return check_bash(inp.get("command", ""), agent, ours, short, cwd, book_root)
+    if tool.startswith("mcp__"):
+        return check_mcp(tool, inp, agent, cwd, book_root)
 
     if tool not in WRITE_TOOLS:
         return 0
@@ -258,12 +316,16 @@ def main(data):
     new, exact = apply_edits(old, tool, inp)
     if not exists and not agent:
         return 0  # the author creating a file (novel-start) owns everything in it
-    if agent and (too_big(old) or too_big(new)):
+    if agent and (new is None or too_big(old) or too_big(new)):
         return decide("deny", f"novelsmith: book/{rel} would be larger than the canon guard checks "
                               f"({MAX_CHARS:,} characters, lines up to {MAX_LINE:,}); split the content.")
     if agent and not exact:
         return decide("deny", f"novelsmith: an old_string does not match book/{rel} exactly (check quotes and "
                               f"spacing), so the change cannot be checked. Read the file and copy the text exactly.")
+
+    if new is None:
+        return decide("ask", f"novelsmith: this edit would make book/{rel} larger than the canon guard checks "
+                             f"({MAX_CHARS:,} characters). Allow it only if you asked for this change.")
 
     problems = []
     if rel == SCENES:
@@ -272,13 +334,20 @@ def main(data):
         if bad_new:
             if agent:
                 problems.append(f"book/{rel}, which {bad_new} after this change, so its waivers cannot be checked")
-        elif (after if bad_old else before != after):
-            # An unreadable old file may be repaired, as long as the repair adds no waivers.
+        elif bad_old:
+            # An unreadable old file may be repaired, unless it has waivers: the repair could not be
+            # compared with them, so it might drop or alter the author's.
+            if after or "waivers" in old:
+                problems.append(f"the book.waivers block of book/{rel} (the current file cannot be read, so the "
+                                f"author's waivers in it cannot be compared; the author repairs this file)")
+        elif before != after:
             problems.append(f"the book.waivers block of book/{rel}")
     old_anchors, new_anchors = anchors(old), anchors(new)
-    if (old_anchors != new_anchors or visible_anchors(old) != visible_anchors(new)) and (
-            exists or has_content(new_anchors)):
-        problems.append(f"a ⚓ section of book/{rel}")
+    old_lines, new_lines = anchor_lines(old), anchor_lines(new)
+    lines_changed = old_lines != new_lines if exists else bool(set(new_lines) - template_anchor_lines())
+    sections_changed = old_anchors != new_anchors or visible_anchors(old) != visible_anchors(new)
+    if lines_changed or (sections_changed and (exists or has_content(new_anchors))):
+        problems.append(f"⚓ text in book/{rel}")
     if rel == PREMISE:
         before_s, after_s = ns_book.book_settings(old), ns_book.book_settings(new)
         changed = [key for key in before_s if before_s[key] and before_s[key] != after_s[key]]
@@ -293,30 +362,47 @@ def main(data):
         return 0
     what = "; ".join(problems)
     if agent:
+        hint = (" Agents never write the ⚓ symbol; refer to \"the anchored section\" in words."
+                if any(p.startswith("⚓") for p in problems) else "")
         return decide("deny", f"novelsmith: this would change {what}. Those are the author's decisions; agents never "
-                              f"change them. Report the tension or write the proposal in book/proposals/.")
+                              f"change them. Report the tension or write the proposal in book/proposals/.{hint}")
     return decide("ask", f"novelsmith: this changes {what}, which holds your decisions as the author. "
                          f"Allow it only if you asked for this change.")
 
 
-def _deadline(signum, frame):
-    raise Unchecked(f"took longer than {DEADLINE:g} s")
+def run(payload):
+    """main() on a watchdog: past DEADLINE the call counts as unchecked, on every platform."""
+    result = {}
+
+    def work():
+        try:
+            result["code"] = main(payload)
+        except Exception as exc:
+            result["error"] = exc
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(DEADLINE)
+    if worker.is_alive():
+        raise TimeoutError(f"took longer than {DEADLINE:g} s")
+    if "error" in result:
+        raise result["error"]
+    return result["code"]
 
 
 if __name__ == "__main__":
     payload = {}
     try:
-        if hasattr(signal, "setitimer"):
-            signal.signal(signal.SIGALRM, _deadline)
-            signal.setitimer(signal.ITIMER_REAL, DEADLINE)
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        sys.exit(main(payload))
+        code = run(payload)
     except Exception as exc:
         tool = payload.get("tool_name", "") if isinstance(payload, dict) else ""
-        if isinstance(payload, dict) and payload.get("agent_type") and tool in WRITE_TOOLS + ("Bash",):
+        guarded = tool in WRITE_TOOLS + ("Bash",) or str(tool).startswith("mcp__")
+        if isinstance(payload, dict) and payload.get("agent_type") and guarded:
             # A subagent's call that cannot be checked is denied, not waved through.
             decide("deny", f"novelsmith: the canon guard could not check this call ({type(exc).__name__}: {exc}), "
                            f"so it is denied for subagents.")
-            sys.exit(0)
-        print(f"guard-canon: {exc}", file=sys.stderr)  # the author's own call fails open
-        sys.exit(1)
+            os._exit(0)  # a worker still running must not print after this
+        print(f"guard-canon: {exc}", file=sys.stderr, flush=True)  # the author's own call fails open
+        os._exit(1)
+    sys.exit(code)

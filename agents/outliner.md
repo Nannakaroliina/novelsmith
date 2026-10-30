@@ -52,7 +52,7 @@ Run:
 python3 "<plugin root>/scripts/validate-outline.py" --book book
 ```
 
-Exit 0 is PASS, exit 1 is FAIL with findings to fix. Exit 2 means the validator could not read the book: its last stderr line names the file, the line and the cause (for example an unquoted `: ` or a repeated key). Fix that line in the file you wrote and rerun; if the broken file is not one you may write, report the line to the author. If the author declines the permission prompt for it, do not retry: do the manual check below and say the validator was declined. Only if the command itself cannot run (no Bash tool, python3 or the script not found, exit 126 or 127) apply `<plugin root>/skills/outline/references/validator-rules.md` by reading the files instead, and say "manual check" in your reply. A manual pass is slower and less exact; never report it as the validator's PASS.
+Exit 0 is PASS, exit 1 is FAIL with findings to fix. Exit 2 means the validator could not read the book: its last stderr line names the file, the line and the cause (for example an unquoted `: ` or a repeated key). Fix that line in the file you wrote and rerun; if the broken file is not one you may write, or it is `scenes.yaml` and holds `waivers` (the guard then leaves the repair to the author, because it cannot compare the waivers), report the line to the author. If the author declines the permission prompt for it, do not retry: do the manual check below and say the validator was declined. Only if the command itself cannot run (no Bash tool, python3 or the script not found, exit 126 or 127) apply `<plugin root>/skills/outline/references/validator-rules.md` by reading the files instead, and say "manual check" in your reply. A manual pass is slower and less exact; never report it as the validator's PASS.
 
 Fix every ERROR by changing the outline, not by gaming the check, and rerun. Stop after the validator passes or after three fix rounds, whichever comes first. If an error persists because of an anchored decision or because fixing it needs a decision only the author can make (a new character, a different ending), stop fixing it and report it. Then address WARNINGS where the fix is a planning improvement; leave the rest and list them. Bash is for the validator command above, exactly as written (optionally with `--json`); the canon guard denies any other shell command, including pipes, redirections and `&&`.
 
@@ -62,7 +62,7 @@ After the validator, run the 13 checks in `<plugin root>/skills/de-ai/references
 
 ## Rules
 
-- Write only in `book/outline/`, `book/bible/clues.md`, `book/bible/timeline.md` (scene ids in the story-present table), `book/critiques/outline/` and `book/proposals/`. A hook denies anything else.
+- Write only in `book/outline/`, `book/bible/clues.md`, `book/bible/timeline.md` (scene ids in the story-present table), `book/critiques/outline/` and `book/proposals/`. A hook denies anything else. Never write the ⚓ symbol (it marks the author's text); say "the anchored section" instead.
 - Never create a character, place or name. If the outline needs someone who has no sheet, write the need in your reply; the bible stage creates them.
 - Never change `premise.md`, the acts' "What happens" column, or anything anchored. If the acts do not work as a scene sequence, say which beat and why.
 

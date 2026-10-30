@@ -98,14 +98,15 @@ book/
 
 ## The canon guard
 
-A `PreToolUse` hook on `Write|Edit|MultiEdit|Bash`:
+A `PreToolUse` hook on `Write|Edit|MultiEdit|Bash` and MCP tools (`mcp__.*`):
 
-- Every heading containing ⚓ (with its body, HTML comments included) in any `book/` file, `book.waivers` in `scenes.yaml`, and the genre, variant and structural-model settings of `premise.md` are the author's. A subagent changing one, adding a new ⚓ section, hiding one in a comment, or leaving `scenes.yaml` unreadable is denied; in the main conversation you are asked to confirm. Agents may fill a setting that is still empty.
+- Every heading containing ⚓ (with its body, HTML comments included) and every other line containing ⚓ in any `book/` file, `book.waivers` in `scenes.yaml`, and the genre, variant and structural-model settings of `premise.md` are the author's. A subagent changing one, adding a ⚓ line in any form (indented, underlined or quoted headings included), hiding one in a comment, or leaving `scenes.yaml` unreadable is denied; in the main conversation you are asked to confirm. A new file may carry only the templates' own ⚓ lines, such as the empty `## ⚓ Anchored` heading. Agents may fill a setting that is still empty. If `scenes.yaml` cannot be read and holds waivers, only you repair it, since the guard cannot compare the waivers.
+- A subagent's MCP call that names a path inside `book/` is denied: a filesystem server's write tools would bypass these rules, and subagents read book files with Read, Glob and Grep. Your own MCP calls are left to Claude Code's permission prompts.
 - Each novelsmith agent writes only its own files under `book/` (for example the worldbuilder writes `bible/world/`, `bible/timeline.md`, `proposals/`) and nothing outside `book/`; a novelsmith agent with no registered scope writes nothing. Other subagents cannot write under `book/bible/`. Paths are compared case-insensitively, as macOS and Windows treat `Bible/` and `bible/` as one folder.
 - A subagent's edit of protected text must match it exactly (the Edit tool otherwise matches curly quotes loosely).
 - Shell, for subagents in a book project: novelsmith agents may run exactly one command, the outline validator; other subagents may run only simple read-only commands (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `pwd`, `stat`, `file`, `diff`) with no shell syntax. Everything else is denied rather than guessed at, because what a shell command will change cannot be read reliably from its text. Your own shell commands in the main conversation are left to Claude Code's permission prompts.
-- Book YAML may not use anchors or aliases, repeat keys or nest more than 64 levels; both parsers refuse them.
-- The guard checks within its own 6-second deadline and size limits (1 MB per file, 20,000 characters per line); a subagent call it cannot finish checking is denied. Where python3 is missing or does not run (for example the macOS placeholder before the developer tools are installed), the hook exits silently and allows the write, so a broken environment never stops you writing; the agents' own instructions still keep them in scope. `/novelsmith:doctor` shows whether the guard is live.
+- Book YAML may not use anchors or aliases, repeat keys (in block or `{ … }` form) or nest more than 64 levels; both parsers refuse them.
+- The guard checks within its own 6-second deadline, kept by a watchdog on every platform, and size limits (1 MB per file, measured before an edit is applied, and 20,000 characters per line); a subagent call it cannot finish checking is denied. Where python3 is missing, the hook allows the write, so a broken environment never stops you writing; the agents' own instructions still keep them in scope. On a Mac without the developer tools, `python3` is a placeholder that offers to install them; until you do, the guard is off. `/novelsmith:doctor` shows whether the guard is live.
 
 ## Getting help
 
