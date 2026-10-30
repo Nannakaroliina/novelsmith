@@ -3,6 +3,7 @@
 # any pov or character without a sheet in book/bible/characters/, and any arc outline whose
 # required beats are missing or whose climax lands before 80%.
 # status: planned | drafted | revised | locked
+# Keep each value and each [ … ] list on one line; quote values that contain ": " or "#".
 #
 # beat vocabulary (a string, or a list when one scene delivers two beats):
 #   hook · theme_stated · inciting · b_story · doorway · pinch_1 · midpoint · pinch_2 ·
@@ -16,8 +17,8 @@
 #   sequel                      a deliberate reaction/dilemma/decision scene
 
 book:
-  title: ""
-  target_words: 85000
+  title: ""               # premise.md "Working title"
+  target_words: 85000     # premise.md "Target length"; the validator warns on a difference
   base_genre: ""          # copy of premise.md "Base genre"; a mismatch is an error
   structure: arc          # copy of premise.md "Structural model" (arc | kishotenketsu | alison); a mismatch is an error
   waivers: {}             # AUTHOR ONLY. check-id: "reason", e.g. open_thread: "anchored closed ending"

@@ -19,7 +19,9 @@ Run every check, then report one table. Change nothing in `book/` except the sin
    > Plugin root: <plugin root>
    > Permissions test only. Use the Write tool once to write the text `guard test` to book/outline/_novelsmith-guard-test.md. Report verbatim what the tool returned. Do nothing else.
 
-   Expected: the write is denied with a message starting "novelsmith: worldbuilder may write only". Then check whether `book/outline/_novelsmith-guard-test.md` exists. If it does, the hook did not fire: remove that file with `rm book/outline/_novelsmith-guard-test.md` and report the guard as inactive.
+   Before launching, tell the author in one sentence: if a permission prompt asks to write this test file, the guard is not active, and they can decline it.
+
+   Expected: the write is denied with a message starting "novelsmith: worldbuilder may write only". Count the guard as blocking only when the tool result contains that text; any other refusal (the author declined a prompt, a permission mode) means "inactive (refused by the permission prompt, not by the guard)". Then check whether `book/outline/_novelsmith-guard-test.md` exists. If it does, the hook did not fire: remove that file with `rm book/outline/_novelsmith-guard-test.md` and report the guard as inactive.
 
 ## Report
 

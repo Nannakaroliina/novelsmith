@@ -761,6 +761,106 @@ class GuardCanon(unittest.TestCase):
         self.assertEqual((p.returncode, p.stdout), (1, ""))
         self.assertTrue(p.stderr.startswith("guard-canon:"), p.stderr)
 
+    # --- Round 7: line endings the guard cannot see ------------------------------------
+    def test_carriage_returns_that_could_move_an_edit_are_denied(self):
+        culprit = "the harbour master's sister."
+        planted = self.premise_text().replace("# Premise\n", f"# Premise\nnote: {culprit}\r")
+        a = "novelsmith:story-architect"
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent=a, content=planted), "deny")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent=a, old_string="# Premise\n",
+                                   new_string="# Premise\rnote\n"), "deny")
+        premise = self.book / "bible/premise.md"
+        premise.write_bytes(planted.encode("utf-8"))  # a lone \r already in the file
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent=a, old_string=culprit + "\n",
+                                   new_string="the ferryman.\n"), "deny")
+        scenes = self.book / "outline/scenes.yaml"
+        crlf = scenes.read_text(encoding="utf-8").replace("\n", "\r\n")
+        scenes.write_bytes(crlf.encode("utf-8"))
+        self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   old_string="\n  target_words", new_string="  waivers: {open_thread: x}\n  target_words"),
+                         "deny")
+        # an ordinary edit of a Windows-line-ending file is fine
+        self.assertIsNone(self.hook("Edit", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                    old_string="word_target: 1800", new_string="word_target: 2000"))
+
+    def test_an_old_string_that_matches_twice_is_not_checked_as_once(self):
+        premise = self.book / "bible/premise.md"
+        text = self.premise_text().replace("# Premise\n", "# Premise\nThe culprit is the harbour master's sister.\n")
+        premise.write_text(text, encoding="utf-8")
+        edit = dict(old_string="The culprit is the harbour master's sister.", new_string="The culprit is the ferryman.")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent="novelsmith:story-architect", **edit), "deny")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", **edit), "ask")
+
+    # --- Round 7: other ways in ----------------------------------------------------------
+    @unittest.skipUnless(Path("/System/Volumes/Data").is_dir(), "macOS firmlinks only")
+    def test_firmlink_path_reaches_the_book(self):
+        firm = "/System/Volumes/Data" + str(self.book / "bible/premise.md")
+        if not Path(firm).exists():
+            self.skipTest("the temp folder is not on the data volume")
+        forged = self.premise_text().replace("harbour master's sister", "ferryman")
+        self.assertEqual(self.hook("Write", firm, agent="general-purpose", raw=True, content=forged), "deny")
+        self.assertEqual(self.hook("Write", firm, raw=True, content=forged), "ask")
+
+    def test_powershell_and_notebooks_are_held_to_the_rules(self):
+        self.assertEqual(self.hook("PowerShell", None, agent="general-purpose",
+                                   tool_input_override={"command": "Set-Content book/bible/premise.md x"}), "deny")
+        self.assertIsNone(self.hook("PowerShell", None, tool_input_override={"command": "Get-ChildItem"}))
+        self.assertEqual(self.hook("NotebookEdit", None, agent="general-purpose",
+                                   tool_input_override={"notebook_path": str(self.book / "outline/x.ipynb"),
+                                                        "new_source": "x"}), "deny")
+        self.assertIsNone(self.hook("NotebookEdit", None, agent="general-purpose",
+                                    tool_input_override={"notebook_path": str(self.project / "src/x.ipynb"),
+                                                         "new_source": "x"}))
+
+    def test_another_tools_book_folder_is_not_a_book_project(self):
+        import shutil
+        shutil.rmtree(self.book)
+        (self.project / "book/html").mkdir(parents=True)  # e.g. mdBook's output
+        self.assertIsNone(self.bash("git status", agent="general-purpose"))
+        self.assertIsNone(self.mcp({"path": "x"}, tool="mcp__filesystem__write_file"))
+        self.assertIsNone(self.hook("Write", "book/html/index.html", agent="general-purpose", content="<p>x</p>"))
+
+    def test_validator_runs_from_a_plugin_folder_with_shell_characters(self):
+        odd = self.project / "Writing (2026)" / "com~apple~CloudDocs"
+        odd.mkdir(parents=True)
+        (odd / "novelsmith").symlink_to(ROOT)
+        script = odd / "novelsmith/scripts/validate-outline.py"
+        self.assertIsNone(self.bash(f'python3 "{script}" --book book'))
+        self.assertIsNone(self.bash(f"python3 '{script}' --book book --json"))
+        for bad in (f'python3 "{script}$(id)" --book book', f'python3 "{script}" --book book; rm -rf book',
+                    f'python3 {script} --book book', f'python3 "{script}" --book "book`id`"'):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.bash(bad), "deny")
+
+    def test_a_check_that_cannot_finish_is_denied_or_asked_never_waved_through(self):
+        import contextlib
+        import io
+        g = guard_module()
+
+        def too_slow(raw):
+            raise TimeoutError("took longer than 6 s")
+
+        g.run = too_slow
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.project)
+        try:
+            for agent, rel, decision, code in (("novelsmith:outliner", "book/outline/chapters.md", "deny", 0),
+                                               (None, "book/bible/premise.md", "ask", 0),
+                                               (None, "src/app.py", None, 1)):
+                payload = {"cwd": str(self.project), "tool_name": "Write",
+                           "tool_input": {"file_path": str(self.project / rel), "content": "x"}}
+                if agent:
+                    payload["agent_type"] = agent
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    got = g.cli(json.dumps(payload).encode())
+                with self.subTest(agent=agent, rel=rel):
+                    self.assertEqual(got, code)
+                    printed = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"] \
+                        if out.getvalue() else None
+                    self.assertEqual(printed, decision)
+        finally:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+
 
 class HookCommand(unittest.TestCase):
     """Run the exact command string from hooks/hooks.json through sh."""
@@ -787,7 +887,13 @@ class HookCommand(unittest.TestCase):
 
     def test_matcher_covers_every_guarded_tool(self):
         matcher = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["matcher"]
-        self.assertEqual(set(matcher.split("|")), set(guard_module().WRITE_TOOLS) | {"Bash", "mcp__.*"})
+        g = guard_module()
+        self.assertEqual(set(matcher.split("|")), set(g.WRITE_TOOLS) | set(g.SHELL_TOOLS) | {g.NOTEBOOK_TOOL, "mcp__.*"})
+
+    def test_deadline_leaves_room_before_the_hook_timeout(self):
+        hook = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0]
+        # two interpreter starts and the decision must fit after the child's deadline
+        self.assertLess(guard_module().DEADLINE + 2, hook["timeout"])
 
     def test_denies_when_installed(self):
         p = self.sh(CLAUDE_PLUGIN_ROOT=str(ROOT))

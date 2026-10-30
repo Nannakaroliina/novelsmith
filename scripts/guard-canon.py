@@ -24,12 +24,19 @@ Rules, enforced here because plugin agents cannot carry their own hooks:
 4. MCP tools, for subagents in a book project: only tools whose names say they
    read (read_file, list_directory, search_issues) and name no change. A
    filesystem or shell server's other tools would bypass rules 1-3, and which
-   paths a tool touches cannot be read reliably from its arguments.
+   paths a tool touches cannot be read reliably from its arguments. PowerShell
+   and notebook edits under book/ are denied to subagents the same way.
+
+A book project is a book/ folder holding progress.md or outline/scenes.yaml
+(what novel-start writes); another tool's book/ folder is left alone. A path
+reaches the book however it is spelled (case, symlinks, macOS firmlinks).
 
 The checks run in a child process that is killed at DEADLINE seconds (below the
 hook's 10 s timeout), because a hook that times out lets the call through and a
-thread cannot interrupt one long C call. Size caps keep the work linear. Line
-endings are normalised the way the readers see them, and paths are compared
+thread cannot interrupt one long C call; the author's own write to the book is
+then asked about, never waved through. Size caps keep the work linear. Line
+endings are normalised the way the readers see them; a subagent's edit whose
+carriage returns could make the real tool match other text is denied. Paths are compared
 case-insensitively, because macOS and Windows treat book/Bible and book/bible
 as the same folder.
 
@@ -64,11 +71,17 @@ SCENES = "outline/scenes.yaml"
 PREMISE = "bible/premise.md"
 VALIDATOR = HERE / "validate-outline.py"
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
+SHELL_TOOLS = ("Bash", "PowerShell")
+NOTEBOOK_TOOL = "NotebookEdit"
+PYTHONS = {"python3", "python"}
 DEADLINE = 6.0
 MAX_CHARS = 1_000_000
 MAX_LINE = 20_000
 SHELL_META = re.compile(r"[;&|<>$`\\\n\r(){}\[\]*?!~#]")
 SAFE_READS = {"ls", "cat", "head", "tail", "wc", "grep", "pwd", "stat", "file", "diff"}
+VALIDATOR_COMMAND = re.compile(r"""(\S+)[ \t]+("[^"]*"|'[^']*'|[^\s"']+)[ \t]+--book[ \t]+("[^"]*"|'[^']*'|[^\s"']+)"""
+                               r"""([ \t]+--json)?[ \t]*""")
+LONE_CR = re.compile(r"\r(?!\n)")
 MCP_READ_WORDS = {"read", "get", "list", "search", "find", "fetch", "view", "show", "describe", "status", "info",
                   "inspect", "count", "lookup"}
 MCP_CHANGE_WORDS = {"write", "edit", "create", "update", "delete", "remove", "move", "rename", "copy", "set", "put",
@@ -105,8 +118,62 @@ def book_relative(path, book_root):
     return None
 
 
-def read(path):
-    return ns_book.normalize(path.read_text(encoding="utf-8", errors="surrogateescape")) if path.is_file() else ""
+def locate(path, book_root):
+    """The path inside book/ (as book_relative gives it), or None. Also finds the book when the path names it
+    another way, such as a macOS firmlink (/System/Volumes/Data/Users/…): an ancestor that is the same folder
+    as book/ counts, whatever it is called."""
+    root = book_root.resolve()
+    rel = book_relative(path, root)
+    if rel is not None:
+        return rel
+    try:
+        st = root.stat()
+    except OSError:
+        return None
+    if not st.st_ino:
+        return None  # this file system gives no folder identity to compare
+    for parent in (path, *path.parents):
+        try:
+            other = parent.stat()
+        except OSError:
+            continue
+        if (other.st_dev, other.st_ino) == (st.st_dev, st.st_ino):
+            inner = path.relative_to(parent).as_posix()
+            return "" if inner == "." else fold(inner)
+    return None
+
+
+def is_book_project(book_root):
+    """A novelsmith book: book/ holding a file novel-start writes. Another tool's book/ folder (mdBook,
+    Jupyter Book) is not one, so subagents there keep their usual tools."""
+    return (book_root / "progress.md").is_file() or (book_root / SCENES).is_file()
+
+
+def read_raw(path):
+    """The file exactly as the Edit tool sees it, line endings untouched."""
+    if not path.is_file():
+        return ""
+    with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+        return f.read()
+
+
+def line_ending_problem(tool, inp, raw_old):
+    """Why carriage returns could make the real tool change other text than the guard checks (the guard
+    compares text with every line ending as a plain line break), or None."""
+    if tool == "Write":
+        content = inp.get("content")
+        return ("the new text holds a carriage return that is not part of a line break"
+                if isinstance(content, str) and LONE_CR.search(content) else None)
+    edits = (inp.get("edits") if tool == "MultiEdit" else [inp]) or []
+    olds = [e.get("old_string") for e in edits if isinstance(e, dict)]
+    texts = [x for e in edits if isinstance(e, dict) for x in (e.get("old_string"), e.get("new_string"))]
+    if any(isinstance(x, str) and "\r" in x for x in texts):
+        return "an old_string or new_string holds a carriage return"
+    if LONE_CR.search(raw_old):
+        return "the file holds a carriage return that is not part of a line break"
+    if "\r" in raw_old and any(isinstance(x, str) and x.startswith("\n") for x in olds):
+        return "an old_string starts with a line break in a file with Windows line endings"
+    return None
 
 
 def edits_of(tool, inp):
@@ -130,10 +197,12 @@ def apply_edits(old, tool, inp):
             if new.strip() == "":
                 new = b  # Edit with an empty old_string fills an empty or new file
             continue
-        count = new.count(a) if e.get("replace_all") else int(a in new)
+        count = new.count(a)
         if not count:
             exact = False  # the real tool may still match (it normalises curly quotes)
             continue
+        if count > 1 and not e.get("replace_all"):
+            exact, count = False, 1  # the real tool refuses an old_string that is not unique
         if len(new) + count * (len(b) - len(a)) > MAX_CHARS:
             return None, exact
         new = new.replace(a, b) if e.get("replace_all") else new.replace(a, b, 1)
@@ -259,16 +328,24 @@ def decide(decision, reason):
 
 
 def is_validator_command(command, cwd):
-    """True only for: python3 <this plugin's validate-outline.py> --book <dir> [--json], with no shell syntax."""
-    if SHELL_META.search(command):
+    """True only for: python3 <this plugin's validate-outline.py> --book <dir> [--json]. Either path may be
+    quoted, since a plugin folder can hold ~, ( ) or Windows backslashes; no shell syntax outside the quotes,
+    and no $, backquote or line break inside double quotes."""
+    m = VALIDATOR_COMMAND.fullmatch(command)
+    if not m or m.group(1) not in PYTHONS:
         return False
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        return False
-    if len(argv) not in (4, 5) or argv[0] != "python3" or argv[2] != "--book" or argv[4:] not in ([], ["--json"]):
-        return False
-    script = Path(argv[1]) if os.path.isabs(argv[1]) else cwd / argv[1]
+    args = []
+    for arg in (m.group(2), m.group(3)):
+        if arg[0] == "'":
+            bad = "\n" in arg or "\r" in arg
+        elif arg[0] == '"':
+            bad = bool(re.search(r"[$`\n\r]", arg))
+        else:
+            bad = bool(SHELL_META.search(arg))
+        if bad:
+            return False
+        args.append(arg[1:-1] if arg[0] in "\"'" else arg)
+    script = Path(args[0]) if os.path.isabs(args[0]) else cwd / args[0]
     try:
         return script.resolve().samefile(VALIDATOR)
     except OSError:
@@ -295,7 +372,7 @@ def check_bash(command, agent, ours, short, cwd, book_root):
                                   f"(python3 \"{VALIDATOR}\" --book book [--json]) with no other shell syntax. "
                                   f"Use the Write and Edit tools for files.")
         return 0
-    if book_root.is_dir() and not is_simple_read(command):
+    if is_book_project(book_root) and not is_simple_read(command):
         return decide("deny", "novelsmith: in a book project, subagents may run only simple read-only commands "
                               f"({', '.join(sorted(SAFE_READS))}) without shell syntax; the canon guard cannot check "
                               "what other commands change. Use the Read, Write and Edit tools.")
@@ -303,9 +380,10 @@ def check_bash(command, agent, ours, short, cwd, book_root):
 
 
 def needs_check(tool, agent):
-    """Whether the hook must run the checks: every file write, and a subagent's shell and MCP calls."""
+    """Whether the hook must run the checks: every file write, and a subagent's shell, notebook and MCP calls."""
     tool = str(tool)
-    return tool in WRITE_TOOLS or (bool(agent) and (tool == "Bash" or tool.startswith("mcp__")))
+    return tool in WRITE_TOOLS or (bool(agent) and (
+        tool in SHELL_TOOLS or tool == NOTEBOOK_TOOL or tool.startswith("mcp__")))
 
 
 def mcp_reads_only(tool):
@@ -317,7 +395,7 @@ def mcp_reads_only(tool):
 
 
 def check_mcp(tool, agent, book_root):
-    if not agent or not book_root.is_dir():
+    if not agent or not is_book_project(book_root):
         return 0  # the author's own MCP calls: Claude Code's permission prompts apply
     if not mcp_reads_only(tool):
         return decide("deny", f"novelsmith: in a book project, subagents may use only MCP tools whose names say they "
@@ -340,19 +418,31 @@ def main(data):
     # Rule 3: the shell.
     if tool == "Bash":
         return check_bash(inp.get("command", ""), agent, ours, short, cwd, book_root)
+    if tool == "PowerShell":
+        if agent and (ours or is_book_project(book_root)):
+            return decide("deny", "novelsmith: in a book project, subagents do not use PowerShell; the canon guard "
+                                  "cannot check what it changes. Use the Read, Write and Edit tools.")
+        return 0
     if tool.startswith("mcp__"):
         return check_mcp(tool, agent, book_root)
 
-    if tool not in WRITE_TOOLS:
+    if tool not in WRITE_TOOLS + (NOTEBOOK_TOOL,):
         return 0
-    raw = inp.get("file_path")
+    raw = inp.get("notebook_path" if tool == NOTEBOOK_TOOL else "file_path")
     if not raw:
         return 0
     path = (cwd / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
-    rel = book_relative(path, book_root.resolve())
+    rel = locate(path, book_root)
     if rel is None:
         if ours:
             return decide("deny", f"novelsmith: {short} writes only under book/; {raw} is outside the book.")
+        return 0
+    if not ours and not is_book_project(book_root):
+        return 0  # another tool's book/ folder
+    if tool == NOTEBOOK_TOOL:
+        if agent:
+            return decide("deny", f"novelsmith: subagents may not edit notebooks under book/ ({raw}); book files "
+                                  f"are Markdown and YAML, written with the Write and Edit tools.")
         return 0
 
     # Rule 2: write scopes for subagents.
@@ -370,16 +460,23 @@ def main(data):
 
     # Rule 1: author-owned text.
     exists = path.is_file()
-    old = read(path)
+    raw_old = read_raw(path)
+    old = ns_book.normalize(raw_old)
     new, exact = apply_edits(old, tool, inp)
+    endings = line_ending_problem(tool, inp, raw_old)
+    if endings and agent:
+        return decide("deny", f"novelsmith: {endings} in book/{rel}, so the canon guard cannot tell which text the "
+                              f"real edit changes. Use plain line breaks and copy the text exactly.")
+    exact = exact and not endings
     if not exists and not agent:
         return 0  # the author creating a file (novel-start) owns everything in it
     if agent and (new is None or too_big(old) or too_big(new)):
         return decide("deny", f"novelsmith: book/{rel} would be larger than the canon guard checks "
                               f"({MAX_CHARS:,} characters, lines up to {MAX_LINE:,}); split the content.")
     if agent and not exact:
-        return decide("deny", f"novelsmith: an old_string does not match book/{rel} exactly (check quotes and "
-                              f"spacing), so the change cannot be checked. Read the file and copy the text exactly.")
+        return decide("deny", f"novelsmith: an old_string does not match book/{rel} exactly, or matches it more "
+                              f"than once, so the change cannot be checked. Read the file and copy the text exactly, "
+                              f"with enough context to be unique.")
 
     if new is None:
         return decide("ask", f"novelsmith: this edit would make book/{rel} larger than the canon guard checks "
@@ -441,21 +538,51 @@ def run(raw):
     return p.stdout
 
 
-if __name__ == "__main__":
-    raw = sys.stdin.buffer.read()
-    if sys.argv[1:] == ["--check"]:
-        sys.exit(main(json.loads(raw.decode("utf-8"))))
+def writes_book(payload):
+    """True if the call is a write to a file under the project's book/ (decided cheaply, in the parent)."""
+    inp = payload.get("tool_input")
+    raw = inp.get("file_path") if isinstance(inp, dict) else None
+    if not isinstance(raw, str) or not raw:
+        return False  # no file the real tool could write either
+    try:
+        cwd = Path(payload.get("cwd") or os.getcwd())
+        project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
+        path = (cwd / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
+        return locate(path, project / "book") is not None
+    except Exception:  # cannot tell: treat it as the book's
+        return True
+
+
+def cli(raw):
+    """The hook: the checks run in a child process and its decision is passed on. Returns the exit code."""
     payload = {}
     try:
         payload = json.loads(raw.decode("utf-8"))
         if needs_check(payload.get("tool_name", ""), payload.get("agent_type")):
             sys.stdout.buffer.write(run(raw))  # the author's own shell and MCP calls need no check
+        return 0
     except Exception as exc:
-        agent = payload.get("agent_type") if isinstance(payload, dict) else None
-        if agent and needs_check(payload.get("tool_name", ""), agent):
+        if not isinstance(payload, dict):
+            payload = {}
+        tool, agent = payload.get("tool_name", ""), payload.get("agent_type")
+        why = f"{type(exc).__name__}: {exc}"
+        if agent and needs_check(tool, agent):
             # A subagent's call that cannot be checked is denied, not waved through.
-            decide("deny", f"novelsmith: the canon guard could not check this call ({type(exc).__name__}: {exc}), "
-                           f"so it is denied for subagents.")
-            sys.exit(0)
-        print(f"guard-canon: {exc}", file=sys.stderr, flush=True)  # the author's own call fails open
-        sys.exit(1)
+            decide("deny", f"novelsmith: the canon guard could not check this call ({why}), so it is denied for "
+                           f"subagents.")
+            return 0
+        if tool in WRITE_TOOLS and writes_book(payload):
+            # The author's own write to the book is asked about, never blocked and never waved through unseen.
+            decide("ask", f"novelsmith: the canon guard could not check this change to the book ({why}), so it "
+                          f"cannot tell whether it touches your ⚓ text, waivers or premise settings. Allow it only "
+                          f"if you asked for this change.")
+            return 0
+        print(f"guard-canon: {exc}", file=sys.stderr, flush=True)  # anything else of the author's fails open
+        return 1
+
+
+if __name__ == "__main__":
+    raw = sys.stdin.buffer.read()
+    if sys.argv[1:] == ["--check"]:
+        sys.exit(main(json.loads(raw.decode("utf-8"))))
+    sys.exit(cli(raw))

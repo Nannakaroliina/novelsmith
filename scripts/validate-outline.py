@@ -55,6 +55,8 @@ ARC_BEATS = [
 # In a mystery these beats stand in for the general ones.
 MYSTERY_ALIASES = {"inciting": {"inciting_crime"}, "climax": {"exposure"}}
 MYSTERY_WORDS = ("mystery", "crime", "detective", "noir", "procedural", "whodunit", "cozy")
+# In a compound label the last word names the base genre (genre skill), so "cozy fantasy" is a fantasy.
+OTHER_BASES = ("fantasy", "romance", "horror", "literary", "historical", "sf", "scifi", "kidlit", "erotica")
 NORDIC_WORDS = ("nordic", "finnish", "scandi", "scandinavian")
 NORDIC_SUBPLOTS = ("social", "criminal", "institution", "season")
 
@@ -250,7 +252,8 @@ def validate(book):
         rep.error("book_meta", f"scenes.yaml base_genre {manifest_genre!r} differs from premise.md {premise_genre!r}", "book",
                   "premise.md decides the genre; copy it into scenes.yaml or ask the author to change the premise.")
     genre = premise_genre or manifest_genre
-    is_mystery = any(w in genre for w in MYSTERY_WORDS)
+    genre_words = re.findall(r"[^\W\d_]+", genre)  # whole words: "Crimean" is not "crime"
+    is_mystery = any(w in MYSTERY_WORDS for w in genre_words) and genre_words[-1] not in OTHER_BASES
     is_nordic = is_mystery and any(w in genre + " " + variant for w in NORDIC_WORDS)
     premise_structure = settings["structure"]
     manifest_structure = tag(meta.get("structure") or "")
@@ -295,7 +298,7 @@ def validate(book):
         elif ch is not None:
             rep.error("fields", f"chapter must be a whole number, got {ch!r}", sid)
         wt = s.get("word_target")
-        if isinstance(wt, bool) or not isinstance(wt, (int, float)) or not math.isfinite(wt) or not 0 < wt <= 1e6:
+        if isinstance(wt, bool) or not isinstance(wt, (int, float)) or not finite(wt) or not 0 < wt <= 1e6:
             if wt is not None:
                 rep.error("fields", f"word_target must be a number of words between 1 and 1,000,000, got {wt!r}",
                           sid)
@@ -365,11 +368,16 @@ def validate(book):
         return [s for s in scenes if s["_beats"] & set(beats)]
 
     target = meta.get("target_words")
-    if isinstance(target, (int, float)) and not isinstance(target, bool) and math.isfinite(target) \
-            and target > 0 and total and math.isfinite(total):
+    target_ok = isinstance(target, (int, float)) and not isinstance(target, bool) and finite(target) \
+        and 0 < target <= 1e7
+    if target_ok and total and finite(total):
         drift = (total - target) / target
         if abs(drift) > 0.15:
             rep.warn("length", f"scene word targets sum to {total:,} vs book target {int(target):,} ({drift:+.0%})", "book")
+    wanted = premise_words(premise)
+    if target_ok and wanted and abs(target - wanted) / wanted > 0.15:
+        rep.warn("length", f"book.target_words {int(target):,} differs from premise.md Target length {wanted:,}",
+                 "book", "copy premise.md \"Target length\" into book.target_words in scenes.yaml")
 
     climax_pos = None
     if structure == "arc":
@@ -549,7 +557,28 @@ def find_book(arg):
     return Path("book")
 
 
+def finite(x):
+    """False only for an infinite or NaN float (math.isfinite overflows on a huge int)."""
+    return not isinstance(x, float) or math.isfinite(x)
+
+
+def premise_words(premise):
+    """premise.md "Target length" as a number of words (85,000 / 85 000 / 85k), or None."""
+    value = ns_book.field(strip_html_comments(premise), "Target length")
+    m = re.search(r"(\d[\d,.\s]{0,12})\s*([kK]\b)?", value)
+    if not m:
+        return None
+    digits = re.sub(r"\D", "", m.group(1).split(".")[0] if m.group(2) else m.group(1))
+    words = int(digits) * (1000 if m.group(2) else 1) if digits else 0
+    return words if 0 < words <= 10_000_000 else None
+
+
 def main():
+    for stream in (sys.stdout, sys.stderr):  # a piped Windows console is cp1252; findings hold ⚓, → and names
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--book", help="path to the book/ directory (default: ./book)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")

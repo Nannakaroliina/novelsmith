@@ -14,7 +14,7 @@ import unicodedata
 
 ANCHOR = "⚓"
 BOOK_SETTINGS = ("Base genre", "Subgenre / variant", "Structural model")
-_PLACEHOLDER = re.compile(r"\((?:e\.g\.|eg|for example)[^)]*\)|\{\{[^}]*\}\}", re.I)
+_PLACEHOLDER = re.compile(r"\((?:e\.g\.|eg|for example)[^)\n]{0,300}\)|\{\{[^}\n]{0,100}\}\}", re.I)  # bounded: linear
 _ANCHOR_REF = re.compile(r"&#(?:0*9875|x0*2693);?|:anchor:", re.I)
 _QUOTE_MARKS = re.compile(r"(?: {0,3}>)* {0,3}")
 _SETEXT = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
@@ -146,7 +146,7 @@ def anchor_lines(text, markdown=True):
     text = decode_anchor(text)
     heads = headings(text) if markdown else []
     comment = "<!--" if markdown else "#"
-    out, parents, place, k, pos = [], [], "", 0, 0  # parents: (indent, line) of the open lines above
+    out, parents, place, k, pos, placed = [], [], "", 0, 0, -1  # parents: (indent, line) of open lines above
     for line in text.split("\n"):
         start, pos = pos, pos + len(line) + 1
         while k < len(heads) and heads[k][3] < start:
@@ -157,7 +157,8 @@ def anchor_lines(text, markdown=True):
         if k < len(heads) and heads[k][2] <= start:
             if ANCHOR in line:
                 out.append(("", line))
-            place, parents = " ".join(heads[k][4].split()), []
+            if placed != k:  # once per heading, however many lines a setext heading spans
+                place, parents, placed = " ".join(heads[k][4].split()), [], k
             continue
         indent = len(line) - len(line.lstrip(" \t"))
         while parents and parents[-1][0] >= indent:

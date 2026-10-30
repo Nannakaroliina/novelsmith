@@ -53,6 +53,34 @@ class ValidateOutline(unittest.TestCase):
         self.assertIn(check, checks(out), out["findings"])
         return out
 
+    def test_output_survives_a_windows_console(self):
+        (self.book / "bible/characters/elias-koski.md").write_text("# Elias Koski\n", encoding="utf-8")
+        p = subprocess.run([sys.executable, str(SCRIPT), "--book", str(self.book)], capture_output=True, text=True,
+                           encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "cp1252"})
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("FAIL:", p.stdout)
+
+    def test_genre_words_are_whole_and_the_last_names_the_base(self):
+        premise = self.book / "bible/premise.md"
+        for genre, mystery in (("cozy fantasy", False), ("historical (Crimean War)", False), ("cozy mystery", True),
+                               ("crime fiction", True)):
+            with self.subTest(genre=genre):
+                text = premise.read_text(encoding="utf-8")
+                premise.write_text(re.sub(r"- Base genre: .*", f"- Base genre: {genre}", text), encoding="utf-8")
+                self.replace(self.scenes, re.search(r"  base_genre: .*", self.scenes.read_text(encoding="utf-8"))
+                             .group(), f'  base_genre: "{genre}"')
+                code, out, err = run(self.book)
+                self.assertEqual(out["stats"]["mystery"], mystery, err)
+
+    def test_target_length_in_the_premise_is_compared(self):
+        premise = self.book / "bible/premise.md"
+        self.replace(premise, "## Genre\n", "## Genre\n- Target length: 60,000 words\n")
+        code, out, err = run(self.book)
+        self.assertIn("length", checks(out, "warning"))
+        self.replace(premise, "60,000 words", "27k")
+        code, out, err = run(self.book)
+        self.assertFalse([f for f in out["findings"] if "Target length" in f["message"]])
+
     def test_fixture_passes(self):
         code, out, err = run(self.book)
         self.assertEqual(code, 0, out and out["findings"] or err)
@@ -437,6 +465,12 @@ class MiniYaml(unittest.TestCase):
         ("title: 'Don''t Look Back'\n", {"title": "Don't Look Back"}),
         ("a: {k: , j: 1}\n", {"a": {"k": None, "j": 1}}), ("a: {k:}\n", {"a": {"k": None}}),
         ("a: [\"who?\"]\n", {"a": ["who?"]}), ("a: who?\n", {"a": "who?"}),
+        # a no-break or ideographic space is text to YAML, not indentation
+        ("book:\n  title: X\n\u00a0\u00a0waivers: {open_thread: x}\n",
+         {"book": {"title": "X"}, "\u00a0\u00a0waivers": {"open_thread": "x"}}),
+        ("a: x\u00a0 # c\n", {"a": "x\u00a0"}), ("waivers\u00a0: 1\n", {"waivers\u00a0": 1}),
+        ("a:\n\u3000b: 1\n", {"a": None, "\u3000b": 1}), ("a: |\n  \u00a0x\n", {"a": "\u00a0x\n"}),
+        ("a: >\n  one\n\n  two\n  three\n", {"a": "one\ntwo three\n"}),
     ]
 
     # The fallback refuses these; PyYAML reads them, so they are not silent disagreements.
@@ -449,7 +483,8 @@ class MiniYaml(unittest.TestCase):
                    "x: " + "[" * 2000 + "]" * 2000 + "\n", "a: 1\na: 2\n",
                    "w: {a: 1, a: 2}\n", "book: {waivers: {x: y}, waivers: {}}\n", "x: " + "[" * 70 + "]" * 70 + "\n",
                    "a: [x, , y]\n", "a: [x] y\n", "title: 'Don't Look Back'\n", "'Don't': x\n",
-                   "b:\n  <<: {t: X}\n", "a: [who?]\n", "a: {k?: v}\n", "a: [a?b]\n"]
+                   "b:\n  <<: {t: X}\n", "a: [who?]\n", "a: {k?: v}\n", "a: [a?b]\n",
+                   "a: x\x0cy\n", "a: 1\x1cb: 2\n", "a: x\x0b\n"]
     if hasattr(sys, "get_int_max_str_digits"):  # Python 3.11+ caps int() at 4,300 digits; 3.9 reads it
         BOTH_REFUSE.append("n: " + "9" * 5000 + "\n")
 

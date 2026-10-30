@@ -26,6 +26,9 @@ except ImportError:  # pragma: no cover - depends on the machine
     _pyyaml = None
 
 MAX_DEPTH = 64
+_WS = " \t"  # the only white space YAML knows; a no-break space is text, as PyYAML reads it
+# The characters PyYAML refuses (its reader's NON_PRINTABLE), so both parsers refuse the same ones.
+_NON_PRINTABLE = re.compile("[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\U00010000-\U0010ffff]")
 _FORCE_FALLBACK = os.environ.get("NOVELSMITH_YAML") == "fallback"
 _CRASHES = (ValueError, TypeError, OverflowError, RecursionError, MemoryError, KeyError, IndexError,
             AttributeError)
@@ -104,6 +107,10 @@ def load(text):
             raise YAMLError(_describe(exc), _error_line(exc)) from exc
         except _CRASHES as exc:
             raise YAMLError(f"cannot read a value ({type(exc).__name__}: {exc})") from exc
+    bad = _NON_PRINTABLE.search(text)
+    if bad:
+        raise YAMLError(f"remove the special character {bad.group()!r} (it is invisible or not allowed in YAML)",
+                        text.count("\n", 0, bad.start()) + 1)
     try:
         return _Parser(text).parse()
     except YAMLError:
@@ -200,15 +207,15 @@ def _strip_comment(s):
         if ch in "\"'" and _opens_quote(prev):
             end = _quote_end(s, i)
             if end == -1:
-                return s.rstrip()
+                return s.rstrip(_WS)
             i, prev = end + 1, ch
             continue
         if ch == "#" and (i == 0 or s[i - 1] in " \t"):
-            return s[:i].rstrip()
+            return s[:i].rstrip(_WS)
         if ch not in " \t":
             prev = ch
         i += 1
-    return s.rstrip()
+    return s.rstrip(_WS)
 
 
 def _key_text(text, line=None):
@@ -233,7 +240,7 @@ def _key_split(s):
         return None
     while i < len(s):
         if s[i] == ":" and (i + 1 == len(s) or s[i + 1] == " "):
-            return _key_text(s[:i].strip()), s[i + 1:].strip()
+            return _key_text(s[:i].strip(_WS)), s[i + 1:].strip(_WS)
         i += 1
     return None
 
@@ -251,7 +258,7 @@ def _flow(s, line, depth):
     """A [ … ] or { … } value written on one line, read in a single pass (linear in its length)."""
     value, i = _flow_node(s, 0, line, depth)
     if _skip_space(s, i) != len(s):
-        raise YAMLError(f"unexpected text after the closing bracket: {s[i:].strip()!r}", line)
+        raise YAMLError(f"unexpected text after the closing bracket: {s[i:].strip(_WS)!r}", line)
     return value
 
 
@@ -284,7 +291,7 @@ def _flow_node(s, i, line, depth):
             if i < len(s) and s[i] == ",":
                 i = _skip_space(s, i + 1)  # a comma before the closing bracket is allowed, as in PyYAML
             elif i < len(s) and s[i] != close:
-                raise YAMLError(f"expected ',' or '{close}' in {s.strip()!r}", line)
+                raise YAMLError(f"expected ',' or '{close}' in {s.strip(_WS)!r}", line)
     if ch and ch in "\"'":
         end = _quote_end(s, i)
         if end == -1:
@@ -293,9 +300,9 @@ def _flow_node(s, i, line, depth):
     j = i
     while j < len(s) and s[j] not in _FLOW_STOP:
         j += 1
-    text = s[i:j].strip()
+    text = s[i:j].strip(_WS)
     if not text:
-        raise YAMLError(f"empty item in {s.strip()!r}", line)
+        raise YAMLError(f"empty item in {s.strip(_WS)!r}", line)
     _no_flow_question(text, line)
     return _scalar(text, line, depth), j
 
@@ -320,18 +327,18 @@ def _flow_key(s, i, line):
     j = i
     while j < len(s) and not (s[j] == ":" and (j + 1 == len(s) or s[j + 1] in " \t" + _FLOW_STOP)):
         if s[j] in _FLOW_STOP:
-            raise YAMLError(f"cannot read flow map entry {s[i:j + 1].strip()!r}", line)
+            raise YAMLError(f"cannot read flow map entry {s[i:j + 1].strip(_WS)!r}", line)
         j += 1
-    text = s[i:j].strip()
+    text = s[i:j].strip(_WS)
     if j >= len(s) or not text:
-        raise YAMLError(f"cannot read flow map entry {s[i:].strip()!r}", line)
+        raise YAMLError(f"cannot read flow map entry {s[i:].strip(_WS)!r}", line)
     _no_flow_question(text, line)
     return _key_text(text, line), j + 1
 
 
 def _scalar(raw, line, depth=1):
     """A value on one line; depth is how deeply this value is nested (refused past MAX_DEPTH)."""
-    s = raw.strip()
+    s = raw.strip(_WS)
     if depth > MAX_DEPTH:
         raise YAMLError(f"nested more than {MAX_DEPTH} levels deep", line)
     if s == "":
@@ -377,13 +384,13 @@ class _Parser:
     def __init__(self, text):
         self.lines = []  # (lineno, indent, content, raw)
         for n, raw in enumerate(text.splitlines(), 1):
-            if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+            if "\t" in raw[: len(raw) - len(raw.lstrip(_WS))]:
                 raise YAMLError("tabs are not allowed for indentation", n)
             content = _strip_comment(raw)
-            if content.strip() in ("", "---"):
+            if content.strip(_WS) in ("", "---"):
                 self.lines.append((n, None, "", raw))
                 continue
-            self.lines.append((n, len(content) - len(content.lstrip()), content.strip(), raw))
+            self.lines.append((n, len(content) - len(content.lstrip(_WS)), content.strip(_WS), raw))
         self.i = 0
 
     def _skip_blank(self):
@@ -428,7 +435,7 @@ class _Parser:
             if line is None or line[1] != indent or not (line[2] == "-" or line[2].startswith("- ")):
                 break
             n, _, content, raw = line
-            item = content[1:].strip()
+            item = content[1:].strip(_WS)
             if item == "-" or item.startswith("- "):
                 raise YAMLError("a list inside a list on one line ('- - x') needs PyYAML; "
                                 "put the inner list on its own indented lines", n)
@@ -480,15 +487,15 @@ class _Parser:
 
     def _block_scalar(self, indent, header, lineno):
         """| and > scalars, read from the raw lines: a '#' inside the block is text, not a comment."""
-        if header.strip() not in ("|", "|-", ">", ">-"):
-            raise YAMLError(f"block scalar header {header.strip()!r} needs PyYAML; use | or > (optionally with -)",
+        if header.strip(_WS) not in ("|", "|-", ">", ">-"):
+            raise YAMLError(f"block scalar header {header.strip(_WS)!r} needs PyYAML; use | or > (optionally with -)",
                             lineno)
-        folded, strip = header[0] == ">", header.strip().endswith("-")
+        folded, strip = header[0] == ">", header.strip(_WS).endswith("-")
         body, block_indent = [], None
         while self.i < len(self.lines):
             n, _, _, raw = self.lines[self.i]
-            if raw.strip():
-                raw_indent = len(raw) - len(raw.lstrip())
+            if raw.strip(_WS):
+                raw_indent = len(raw) - len(raw.lstrip(_WS))
                 if raw_indent <= indent:
                     break
                 if block_indent is None:
@@ -507,13 +514,16 @@ class _Parser:
         if not body:
             return ""
         if folded:
-            text, blanks = "", 0
+            parts, blanks = [], 0  # joined once, so a long block costs linear time
             for line in body:
                 if line == "":
                     blanks += 1
                     continue
-                text = line if not text and not blanks else text + ("\n" * blanks if blanks else " ") + line
+                if parts or blanks:
+                    parts.append("\n" * blanks if blanks else " ")
+                parts.append(line)
                 blanks = 0
+            text = "".join(parts)
         else:
             text = "\n".join(body)
         return text if strip else text + "\n"
