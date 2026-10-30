@@ -234,17 +234,16 @@ def validate(book):
     # premise.md is the source of truth for genre and structure; scenes.yaml only mirrors them.
     premise = read(bible / "premise.md")
     anchored = ns_book.anchored_text(premise)
-    premise_genre = ns_book.book_setting(premise, "Base genre").lower()
-    variant = ns_book.book_setting(premise, "Subgenre / variant").lower()
-    manifest_genre = str(meta.get("base_genre") or "").strip().lower()
+    settings = ns_book.book_settings(premise)  # the guard protects exactly these values
+    premise_genre, variant = settings["genre"], settings["variant"]
+    manifest_genre = ns_book.fold_setting(str(meta.get("base_genre") or ""))
     if premise_genre and manifest_genre and manifest_genre != premise_genre:
         rep.error("book_meta", f"scenes.yaml base_genre {manifest_genre!r} differs from premise.md {premise_genre!r}", "book",
                   "premise.md decides the genre; copy it into scenes.yaml or ask the author to change the premise.")
     genre = premise_genre or manifest_genre
     is_mystery = any(w in genre for w in MYSTERY_WORDS)
     is_nordic = is_mystery and any(w in genre + " " + variant for w in NORDIC_WORDS)
-    declared = ns_book.book_setting(premise, "Structural model")
-    premise_structure = tag(declared.split(" ")[0]) if declared else ""
+    premise_structure = settings["structure"]
     manifest_structure = tag(meta.get("structure") or "")
     structure = premise_structure or "arc"
     if premise_structure and premise_structure not in STRUCTURES:
@@ -429,7 +428,7 @@ def validate(book):
 
     acts_path = book / "outline" / "acts.md"
     acts = strip_html_comments(read(acts_path))
-    open_md = section(acts, r"Threads the book leaves open")
+    open_md = section(acts, "Threads the book leaves open")
     open_items = [l for l in open_md.splitlines() if re.match(r"^\s*[-*]\s+\S", l)]
     if "open_thread" not in all_flags and not open_items:
         rep.error("open_thread", "no thread is left open at the end", "acts.md / flags",

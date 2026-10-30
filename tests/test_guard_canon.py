@@ -212,9 +212,23 @@ class GuardCanon(unittest.TestCase):
         self.assertEqual(self.hook("Edit", "book/bible/premise.md",
                                    old_string="harbour master’s sister", new_string="ferryman"), "ask")
 
-    def test_inexact_old_string_elsewhere_allowed(self):
+    def test_any_inexact_subagent_edit_is_denied(self):
+        # The real Edit tool matches curly quotes loosely, so an inexact edit's result cannot be predicted.
+        self.assertEqual(self.hook("Edit", "book/outline/chapters.md", agent="novelsmith:outliner",
+                                   old_string="nothing", new_string="x"), "deny")
+        (self.book / "outline/chapters.md").write_text("Kirsi\u2019s plan\n", encoding="utf-8")
+        self.assertEqual(self.hook("Edit", "book/outline/chapters.md", agent="novelsmith:outliner",
+                                   old_string="Kirsi's plan", new_string="x"), "deny")
         self.assertIsNone(self.hook("Edit", "book/outline/chapters.md", agent="novelsmith:outliner",
-                                    old_string="nothing", new_string="x"))
+                                    old_string="Kirsi\u2019s plan", new_string="x"))
+
+    def test_inexact_edit_turning_plain_anchor_text_into_a_heading(self):
+        acts = self.book / "outline/acts.md"
+        acts.write_text(acts.read_text(encoding="utf-8") + "\u201cNote\u201d \u2693 Decision: culprit X\n",
+                        encoding="utf-8")
+        self.assertEqual(self.hook("Edit", "book/outline/acts.md", agent="novelsmith:story-architect",
+                                   old_string='"Note" ', new_string="## "), "deny")
+        self.assertEqual(self.hook("Edit", "book/outline/acts.md", old_string='"Note" ', new_string="## "), "ask")
 
     # --- TEST-3: MultiEdit and replace_all ----------------------------------
     def test_multiedit(self):
@@ -260,37 +274,35 @@ class GuardCanon(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self.bash(cmd), "deny")
 
-    # --- GBUG-4 / LOOP-1: other subagents' shell --------------------------------
-    def test_other_subagents_may_not_touch_book_from_the_shell(self):
-        for cmd in ("sed -i s/a/b/ book/bible/premise.md", "ls book", "cd book && cat bible/premise.md",
-                    f"cat {self.project}/Book/outline/scenes.yaml", "cp x BOOK/bible/style.md"):
+    # --- Shell for other subagents: an allowlist, not a guess ---------------------
+    def test_other_subagents_get_only_simple_reads(self):
+        for cmd in ("ls book", "cat book/bible/premise.md", "grep -rn Aino book", "wc -l book/outline/acts.md",
+                    "head -5 book/bible/style.md", "ls /tmp"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd, agent="general-purpose"))
+        bypasses = ("sed -i s/a/b/ book/bible/premise.md", "cd book && cat bible/premise.md",
+                    "cp x BOOK/bible/style.md", "sed -i s/A/B/ */bible/premise.md", "rm -rf bo?k/bible",
+                    "find . -path '*bible*' -delete", "git checkout -- .", "git clean -fd", 'rm -rf "$D/bible"',
+                    "B=bo; cp x ${B}ok/bible/x", "cp x $'\\x62ook'/bible/x", "python3 /tmp/x.py", "sh x.sh",
+                    "cat book/x\nrm book/bible/style.md", "ls book&&(rm -rf book/bible)", "ls book |& rm x",
+                    "git diff --output=book/bible/premise.md", "tree book -o book/x", "rg --pre ./x pat book",
+                    "bash -lc ls", "python3 -Bc 1", "env python3 -c 1", "printf x | python3",
+                    "grep x book > book/bible/premise.md", "cat b[o]ok/x")
+        for cmd in bypasses:
             with self.subTest(cmd=cmd):
                 self.assertEqual(self.bash(cmd, agent="general-purpose"), "deny")
-        self.assertIsNone(self.bash("ls /tmp", agent="general-purpose"))
-        self.assertEqual(self.hook("Bash", None, agent="general-purpose", cwd=self.book, command="ls"), "deny")
 
-    # --- LOOP-4: main-conversation shell ----------------------------------------
-    def test_main_session_shell(self):
-        v = ROOT / "scripts" / "validate-outline.py"
-        for cmd in ("ls book", "cat book/bible/premise.md", "git diff book/", "grep -r Aino book",
-                    f'python3 "{v}" --book book', f'python3 "{ROOT / "scripts" / "selfcheck.py"}"',
-                    "echo hello"):
+    # --- The author's own shell is left to Claude Code's permission prompts --------
+    def test_main_session_shell_is_not_classified(self):
+        for cmd in ("ls book", "sed -i s/a/b/ book/bible/premise.md", "python3 -c 'print(1)'", "rm -rf book"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self.bash(cmd, agent=None))
-        for cmd in (f'python3 -c "print(1)" "{v}" --book book', "python3 -c 'import os'",
-                    "sh -c 'echo x'", "perl -e 1", "python3 - <<EOF\nprint(1)\nEOF",
-                    "sed -i s/a/b/ book/bible/premise.md", "echo x > book/outline/scenes.yaml",
-                    "rm book/bible/style.md", "find book -delete", "git checkout book/",
-                    f"python3 /tmp/x/scripts/validate-outline.py --book book"):
-            with self.subTest(cmd=cmd):
-                self.assertEqual(self.bash(cmd, agent=None), "ask")
 
     def test_shell_rules_need_a_book(self):
-        (self.book / "bible" / "premise.md").unlink()
         import shutil
         shutil.rmtree(self.book)
-        self.assertIsNone(self.bash("python3 -c 'print(1)'", agent=None))
-        self.assertIsNone(self.bash("sed -i s/a/b/ book/x", agent="general-purpose"))
+        self.assertIsNone(self.bash("sed -i s/a/b/ notes.txt", agent="general-purpose"))
+        self.assertEqual(self.bash("sed -i s/a/b/ notes.txt"), "deny")  # novelsmith agents: validator only
 
     # --- GBUG-1 / GSEC-1 / RES-1 / VSEC-1: crafted YAML ---------------------------
     def test_crashing_or_aliased_yaml_is_denied_not_waved_through(self):
@@ -384,6 +396,81 @@ class GuardCanon(unittest.TestCase):
         self.assertEqual(p.stdout, "")
 
 
+    # --- GSEC-1: the guard decides fast on adversarial text, or denies ------------
+    def test_pathological_heading_is_decided_quickly(self):
+        import time
+        text = (self.book / "bible/premise.md").read_text(encoding="utf-8")
+        poison = "# a" + " " * 20000 + "x\n"
+        start = time.monotonic()
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                   content=text.replace("harbour master's sister", "ferryman") + poison), "deny")
+        self.assertLess(time.monotonic() - start, 3)
+        scenes = (self.book / "outline/scenes.yaml").read_text(encoding="utf-8")
+        start = time.monotonic()
+        self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   content=scenes.replace("  waivers: {}", '  waivers: {beats: "x"}')
+                                   + "#" + " " * 15000 + "x\n" + "<!--" * 40000 + "\n"), "deny")
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_oversized_subagent_content_denied(self):
+        self.assertEqual(self.hook("Write", "book/outline/chapters.md", agent="novelsmith:outliner",
+                                   content="x" * 1_000_001), "deny")
+        self.assertEqual(self.hook("Write", "book/outline/chapters.md", agent="novelsmith:outliner",
+                                   content="ok\n" + "y" * 20_001 + "\n"), "deny")
+        self.assertIsNone(self.hook("Write", "book/outline/chapters.md", agent="novelsmith:outliner",
+                                    content="ok\n" * 1000))
+
+    # --- GSEC-2: line endings are seen the way the readers see them --------------------
+    def test_lone_carriage_returns_cannot_hide_a_section(self):
+        text = (self.book / "bible/premise.md").read_text(encoding="utf-8")
+        sneaky = text.replace("## Genre\n", "## Genre\n\r## \u2693 Note\r- Base genre: romance\r")
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                   content=sneaky), "deny")
+        crlf = text.replace("\n", "\r\n")  # Windows line endings alone change nothing
+        self.assertIsNone(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                    content=crlf))
+
+    # --- DES-1: guard and validator read settings through one normaliser -------------
+    def test_lookalike_genre_spelling_counts_as_a_change(self):
+        text = (self.book / "bible/premise.md").read_text(encoding="utf-8")
+        for spelling in ("my\u017ftery", "MYSTERY", "Mystery"):
+            with self.subTest(spelling=spelling):
+                # long-s folds to "mystery" for both guard and validator, so it is no change either way
+                self.assertIsNone(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                            content=text.replace("- Base genre: mystery", f"- Base genre: {spelling}")))
+        g = guard_module()
+        self.assertEqual(g.ns_book.book_settings(text.replace("mystery", "my\u017ftery"))["genre"], "mystery")
+
+    # --- GBUG-8: UTF-8 in, ASCII out, whatever the console encoding -------------------
+    def test_windows_console_encoding(self):
+        payload = json.dumps({"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Write",
+                              "agent_id": "a1", "agent_type": "novelsmith:story-architect",
+                              "tool_input": {"file_path": str(self.book / "outline/acts.md"),
+                                             "content": "# Acts\n## \u2693 Anchored\n- forged\n"}},
+                             ensure_ascii=False).encode("utf-8")
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.project), "PYTHONIOENCODING": "cp1252"}
+        p = subprocess.run([sys.executable, str(SCRIPT)], input=payload, capture_output=True, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        main = json.dumps({"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Edit",
+                           "tool_input": {"file_path": str(self.book / "bible/premise.md"),
+                                          "old_string": "harbour master's sister", "new_string": "x"}}).encode()
+        p = subprocess.run([sys.executable, str(SCRIPT)], input=main, capture_output=True, env=env)
+        self.assertEqual(json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
+
+    # --- TEST-1: Rule 1 for subagents from other plugins -----------------------------
+    def test_other_subagents_are_held_to_rule_one(self):
+        g = "general-purpose"
+        self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", agent=g, old_string="  waivers: {}",
+                                   new_string='  waivers: {subplot: "x"}'), "deny")
+        self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", agent=g, old_string="turn: turn 3",
+                                   new_string="turn: a: b"), "deny")
+        self.assertEqual(self.hook("Write", "book/outline/acts.md", agent=g,
+                                   content="# Acts\n## \u2693 Anchored\n- forged\n"), "deny")
+        self.assertIsNone(self.hook("Edit", "book/outline/scenes.yaml", agent=g, old_string="turn: turn 3",
+                                    new_string="turn: she sees the key"))
+
+
 class HookCommand(unittest.TestCase):
     """Run the exact command string from hooks/hooks.json through sh."""
 
@@ -406,6 +493,10 @@ class HookCommand(unittest.TestCase):
         base = {"PATH": os.environ["PATH"], "CLAUDE_PROJECT_DIR": str(self.project), **env}
         return subprocess.run(["/bin/sh", "-c", self.command], input=self.payload, capture_output=True,
                               text=True, env=base)
+
+    def test_matcher_covers_every_guarded_tool(self):
+        matcher = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["matcher"]
+        self.assertEqual(set(matcher.split("|")), set(guard_module().WRITE_TOOLS) | {"Bash"})
 
     def test_denies_when_installed(self):
         p = self.sh(CLAUDE_PLUGIN_ROOT=str(ROOT))
