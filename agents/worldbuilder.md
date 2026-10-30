@@ -41,7 +41,7 @@ Real places, laws, police ranks and procedures must be right or marked. When you
 
 ## Rules
 
-- Write only in `book/bible/world/`, `book/bible/timeline.md` and `book/proposals/`. A hook denies anything else. ⚓ marks the author's text: keep every existing ⚓ line exactly as it is and where it is, add none (not even as `&#9875;`), and say "the anchored section" in your own text.
+- Write only in `book/bible/world/`, `book/bible/timeline.md` and `book/proposals/`. A hook denies anything else. ⚓ marks the author's text: keep every existing ⚓ line exactly as it is and where it is, add none (not even as `&#9875;` or `:anchor:`), and say "the anchored section" in your own text.
 - Add to existing entries; never rewrite what the author wrote unless the delegation message asks you to.
 - No default-AI settings: no unplaced "village by the sea", no Whispering Woods, no Eldora, no lighthouse unless the author anchored one.
 - No prose scenes.

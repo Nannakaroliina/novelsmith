@@ -15,9 +15,10 @@ import unicodedata
 ANCHOR = "⚓"
 BOOK_SETTINGS = ("Base genre", "Subgenre / variant", "Structural model")
 _PLACEHOLDER = re.compile(r"\((?:e\.g\.|eg|for example)[^)]*\)|\{\{[^}]*\}\}", re.I)
-_ANCHOR_REF = re.compile(r"&#(?:0*9875|[xX]0*2693);?")
+_ANCHOR_REF = re.compile(r"&#(?:0*9875|x0*2693);?|:anchor:", re.I)
 _QUOTE_MARKS = re.compile(r"(?: {0,3}>)* {0,3}")
 _SETEXT = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
 _LIST_ITEM = re.compile(r"(?:[-*+]|[0-9]{1,9}[.)])(?:[ \t]|$)")
 _BREAK = re.compile(r"(?:-[ \t]*){3,}$|(?:\*[ \t]*){3,}$|(?:_[ \t]*){3,}$")
 _HIDDEN = {"Cc", "Cf", "Mn", "Me", "Zs", "Zl", "Zp"}
@@ -29,8 +30,8 @@ def normalize(text):
 
 
 def decode_anchor(text):
-    """⚓ written as a character reference (&#9875;, &#x2693;) is ⚓: Markdown shows it as the symbol."""
-    return _ANCHOR_REF.sub(ANCHOR, text) if "&#" in text else text
+    """⚓ written another way Markdown shows as the symbol (&#9875;, &#x2693;, :anchor:) is ⚓."""
+    return _ANCHOR_REF.sub(ANCHOR, text) if "&#" in text or ":" in text else text
 
 
 def strip_html_comments(text):
@@ -64,26 +65,47 @@ def _paragraph_line(line):
             and not _LIST_ITEM.match(s) and not _BREAK.match(s) and _atx(line) is None)
 
 
+def _opens_fence(match):
+    return match and not (match.group(1)[0] == "`" and "`" in match.group(2))
+
+
+def _closes_fence(match, fence):
+    return match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence) and not match.group(2).strip()
+
+
 def headings(text):
-    """ATX and setext headings as (level, title, start, end, text), in order; a setext heading spans its
-    paragraph and underline. When unsure, a line is not a heading, so a ⚓ section never ends early."""
-    out, pos, para = [], 0, None  # para: (start, lines) of the paragraph being read
+    """ATX and setext headings as (level, title, start, end, text, clear), in order. A setext heading spans its
+    paragraph and underline; nothing inside a ``` or ~~~ fence is a heading.
+
+    clear is True only where every Markdown reader shows a heading that starts a new section: an ATX heading
+    at the margin, or a setext heading whose paragraph starts at the margin after a blank line or a heading
+    (not a list item's wrapped line). Indented, quoted and other setext headings may open a ⚓ section, but
+    only clear ones end one, so a ⚓ section never ends early.
+    """
+    out, pos, para, fence, fresh = [], 0, None, None, True  # para: (start, lines, clear); fresh: after a break
     for line in text.split("\n"):
         end = pos + len(line)
-        atx = _atx(line)
-        if atx:
-            out.append((atx[0], atx[1], pos, end, line))
-            para = None
+        mark = _FENCE.match(line)
+        if fence:
+            if _closes_fence(mark, fence):
+                fence = None
+            fresh = False
+        elif _opens_fence(mark):
+            fence, para, fresh = mark.group(1), None, False
+        elif _atx(line):
+            level, title = _atx(line)
+            out.append((level, title, pos, end, line, line.startswith("#")))
+            para, fresh = None, True
         elif para and _SETEXT.match(line):
             title = " ".join(part.strip() for part in para[1])
-            out.append((1 if "=" in line else 2, title, para[0], end, "\n".join(para[1] + [line])))
-            para = None
+            out.append((1 if "=" in line else 2, title, para[0], end, "\n".join(para[1] + [line]), para[2]))
+            para, fresh = None, True
         elif para and (_paragraph_line(line) or line.startswith("    ")):
             para[1].append(line)
         elif _paragraph_line(line):
-            para = (pos, [line])
+            para, fresh = (pos, [line], fresh and line[:1] not in " \t"), False
         else:
-            para = None
+            para, fresh = None, not line.strip()
         pos = end + 1
     return out
 
@@ -96,44 +118,54 @@ def _visible(title):
 def anchored_sections(text):
     """Every heading containing ⚓ with its body, in order: [(heading line, body)].
 
-    A body runs to the next heading of the same or a higher level, so ###
-    subsections stay inside their ⚓ section. Headings inside HTML comments are
-    included on purpose: a commented-out ⚓ block is still author text, and a
-    decoy hidden in a comment must count as a change. A heading that shows
-    nothing (## alone, or only a comment) does not end a section.
+    A body runs to the next clear heading (see headings()) or ⚓ heading of the
+    same or a higher level, so ### subsections stay inside their ⚓ section.
+    Headings inside HTML comments are included on purpose: a commented-out ⚓
+    block is still author text, and a decoy hidden in a comment must count as a
+    change. A heading that shows nothing (## alone, or only a comment) does not
+    end a section unless it holds ⚓. One backward pass, so the work stays linear.
     """
     text = decode_anchor(text)
     heads = headings(text)
-    out = []
-    for i, (level, title, _, line_end, line) in enumerate(heads):
-        if ANCHOR not in title:
-            continue
-        end = len(text)
-        for nxt in heads[i + 1:]:
-            if nxt[0] <= level and _visible(nxt[1]):
-                end = nxt[2]
-                break
-        out.append((line.strip(), text[line_end:end]))
-    return out
+    nearest, ends = [len(text)] * 7, [len(text)] * len(heads)  # nearest[k]: next section end for level k
+    for i in range(len(heads) - 1, -1, -1):
+        level, title, start, _, _, clear = heads[i]
+        ends[i] = nearest[level]
+        if ANCHOR in title or (clear and _visible(title)):  # what a ⚓ heading ends is still in its own section
+            for k in range(level, 7):
+                nearest[k] = start
+    return [(line.strip(), text[line_end:ends[i]])
+            for i, (_, title, _, line_end, line, _) in enumerate(heads) if ANCHOR in title]
 
 
-def anchor_lines(text):
+def anchor_lines(text, markdown=True):
     """Every line containing ⚓, in order and as written, each with its place: the nearest line above it that is
-    less indented, or for a line at the margin the nearest heading above it. So moving a ⚓ line to another
-    scene or section is a change, as rewording it is."""
-    out, parents, heading = [], [], ""  # parents: (indent, line) of the open lines above, least indented first
-    for line in decode_anchor(text).split("\n"):
+    less indented, or for a line at the margin the nearest heading above it (comment-only lines never count as a
+    place). So moving a ⚓ line to another scene or section is a change, as rewording it is. A ⚓ heading has no
+    place: the section comparison covers it. In YAML (markdown=False) no line is a heading."""
+    text = decode_anchor(text)
+    heads = headings(text) if markdown else []
+    comment = "<!--" if markdown else "#"
+    out, parents, place, k, pos = [], [], "", 0, 0  # parents: (indent, line) of the open lines above
+    for line in text.split("\n"):
+        start, pos = pos, pos + len(line) + 1
+        while k < len(heads) and heads[k][3] < start:
+            k += 1
         if not line.strip():
             continue
         line = line.rstrip()
+        if k < len(heads) and heads[k][2] <= start:
+            if ANCHOR in line:
+                out.append(("", line))
+            place, parents = " ".join(heads[k][4].split()), []
+            continue
         indent = len(line) - len(line.lstrip(" \t"))
         while parents and parents[-1][0] >= indent:
             parents.pop()
         if ANCHOR in line:
-            out.append((parents[-1][1] if parents else heading, line))
-        if _atx(line):
-            heading = line
-        parents.append((indent, line))
+            out.append((parents[-1][1] if parents else place, line))
+        if not line.lstrip(" \t").startswith(comment):
+            parents.append((indent, line))
     return out
 
 
@@ -145,8 +177,8 @@ def anchored_text(text):
 def section(md, heading_title):
     """Text of the first ## section whose title starts with heading_title, up to the next ## heading."""
     want = heading_title.casefold()
-    heads = [h for h in headings(md) if h[0] == 2]
-    for i, (_, title, _, line_end, _) in enumerate(heads):
+    heads = [h for h in headings(md) if h[0] == 2 and h[5]]
+    for i, (_, title, _, line_end, _, _) in enumerate(heads):
         if title.casefold().startswith(want):
             end = heads[i + 1][2] if i + 1 < len(heads) else len(md)
             return md[line_end:end]

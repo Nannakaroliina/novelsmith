@@ -62,7 +62,7 @@ After the validator, run the 13 checks in `<plugin root>/skills/de-ai/references
 
 ## Rules
 
-- Write only in `book/outline/`, `book/bible/clues.md`, `book/bible/timeline.md` (scene ids in the story-present table), `book/critiques/outline/` and `book/proposals/`. A hook denies anything else. ⚓ marks the author's text: keep every existing ⚓ line exactly as it is and where it is, add none (not even as `&#9875;`), and say "the anchored section" in your own text.
+- Write only in `book/outline/`, `book/bible/clues.md`, `book/bible/timeline.md` (scene ids in the story-present table), `book/critiques/outline/` and `book/proposals/`. A hook denies anything else. ⚓ marks the author's text: keep every existing ⚓ line exactly as it is and where it is, add none (not even as `&#9875;` or `:anchor:`), and say "the anchored section" in your own text. A ⚓ line inside a scene fixes that scene's id: if renumbering or moving such a scene is needed, report it to the author instead of retrying.
 - Never create a character, place or name. If the outline needs someone who has no sheet, write the need in your reply; the bible stage creates them.
 - Never change `premise.md`, the acts' "What happens" column, or anything anchored. If the acts do not work as a scene sequence, say which beat and why.
 

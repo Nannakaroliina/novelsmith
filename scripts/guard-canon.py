@@ -70,7 +70,7 @@ MAX_LINE = 20_000
 SHELL_META = re.compile(r"[;&|<>$`\\\n\r(){}\[\]*?!~#]")
 SAFE_READS = {"ls", "cat", "head", "tail", "wc", "grep", "pwd", "stat", "file", "diff"}
 MCP_READ_WORDS = {"read", "get", "list", "search", "find", "fetch", "view", "show", "describe", "status", "info",
-                  "query", "inspect", "count", "lookup"}
+                  "inspect", "count", "lookup"}
 MCP_CHANGE_WORDS = {"write", "edit", "create", "update", "delete", "remove", "move", "rename", "copy", "set", "put",
                     "post", "patch", "replace", "append", "insert", "save", "upload", "import", "apply", "run",
                     "exec", "execute", "start", "kill", "send", "publish", "push", "commit", "modify", "change",
@@ -144,66 +144,80 @@ def too_big(text):
     return len(text) > MAX_CHARS or any(len(line) > MAX_LINE for line in text.split("\n"))
 
 
-def anchors(text):
-    """Comparable form of every ⚓ section: heading plus whitespace-normalised body, comments kept."""
+def anchors(text, markdown=True):
+    """Comparable form of every ⚓ section: heading plus whitespace-normalised body, comments kept (none in YAML)."""
+    if not markdown:
+        return []
     return [(" ".join(h.split()), " ".join(body.split())) for h, body in ns_book.anchored_sections(text)]
 
 
-def anchor_views(text):
-    """Every ⚓ line in its place and every ⚓ section, as written and as the author sees them (comments removed).
-    Each is a list of (place or heading, line or body); a ⚓ line hidden in a comment drops out of the second."""
-    visible = ns_book.strip_html_comments(text)
-    return ns_book.anchor_lines(text), ns_book.anchor_lines(visible), anchors(text), anchors(visible)
+def anchor_views(text, markdown=True):
+    """(line views, section views): every ⚓ line in its place and every ⚓ section, each as written and, in
+    Markdown, as the author sees it (comments removed, so a ⚓ line hidden in a comment drops out of that view)."""
+    views = [text, ns_book.strip_html_comments(text)] if markdown else [text]
+    return [ns_book.anchor_lines(v, markdown) for v in views], [anchors(v, markdown) for v in views]
 
 
 def first_difference(old, new):
-    """The first item where two lists differ (the new one, unless it only moved), or None if they are equal."""
+    """(old item, new item) where two lists first differ, None standing for a missing item; None if equal."""
+    if old == new:
+        return None
     for i in range(max(len(old), len(new))):
         a, b = old[i] if i < len(old) else None, new[i] if i < len(new) else None
         if a != b:
-            return b if b is not None and b not in old else a
+            return a, b
+
+
+def quoted(text):
+    return '"' + " ".join(text.split())[:120] + '"'
+
+
+def anchor_change(old, new, exists, markdown=True):
+    """What the change does to ⚓ text, in a few words for the message, or None. A new file may carry only the
+    templates' own ⚓ lines and sections (an empty ⚓ section is fine)."""
+    (old_lines, old_sections), (new_lines, new_sections) = anchor_views(old, markdown), anchor_views(new, markdown)
+    if not exists:
+        line = next((x for view in new_lines for x in view if x[1] not in NEW_FILE_ANCHOR_LINES), None)
+        if line:
+            return f"at {quoted(line[1])}"
+        section = next((x for view in new_sections for x in view if x[1] and x not in NEW_FILE_ANCHOR_SECTIONS), None)
+        return f"at {quoted(section[0])}" if section else None
+    for before, after in zip(old_lines, new_lines):
+        diff = first_difference(before, after)
+        if diff:
+            a, b = diff
+            if a and b and a[1] == b[1]:
+                return f"the line {quoted(a[1])} would move from under {quoted(a[0])} to under {quoted(b[0])}"
+            return f"at {quoted((b if b and (not a or b not in before) else a)[1])}"
+    for before, after in zip(old_sections, new_sections):
+        diff = first_difference(before, after)
+        if diff:
+            a, b = diff
+            return f"at {quoted((b if b and (not a or b not in before) else a)[0])}"
     return None
 
 
-def anchor_change(old, new, exists):
-    """The first ⚓ line or section heading that the change adds, removes, moves or rewrites, or None. A new file
-    may carry only the templates' own ⚓ lines and sections (an empty ⚓ section is fine)."""
-    old_views, new_views = anchor_views(old), anchor_views(new)
-    for n, (before, after) in enumerate(zip(old_views, new_views)):
-        if exists:
-            item = first_difference(before, after)
-        elif n < 2:
-            item = next((x for x in after if x[1] not in NEW_FILE_ANCHOR_LINES), None)
-        else:
-            item = next((x for x in after if x[1] and x not in NEW_FILE_ANCHOR_SECTIONS), None)
-        if item is not None:
-            shown = item[1] if n < 2 else item[0]
-            return shown.strip()[:120]
-    return None
-
-
-def may_hold_waivers(text):
-    """Whether an unreadable scenes.yaml might hold the author's waivers, read from its text: any 'waivers' line
-    other than an empty one (the template's 'waivers: {}'), or a backslash, which could spell the key in escapes."""
+def waivers_doubt(text):
+    """Why an unreadable scenes.yaml might hold the author's waivers, read from its text, or None: a 'waivers'
+    entry with anything in or under it, or a backslash, which could spell the key in escapes."""
     if "\\" in text:
-        return True
+        return "it contains a backslash, which could spell the waivers key"
     lines = text.split("\n")
     for i, line in enumerate(lines):
-        if "waivers" not in line.casefold():
+        if "waivers" not in line.casefold() or line.lstrip().startswith("#"):
             continue
         s = line.split(" #", 1)[0].split("\t#", 1)[0].strip()
-        if s in ("waivers: {}", "waivers: null", "waivers: ~"):
-            continue
-        if s == "waivers:":
+        if s in ("waivers:", "waivers: {}", "waivers: null", "waivers: ~"):
             j = i + 1
-            while j < len(lines) and not lines[j].strip():
-                j += 1
+            while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#")):
+                j += 1  # YAML ignores blank and comment lines, wherever they are indented
             below = lines[j] if j < len(lines) else ""
             depth, below_depth = len(line) - len(line.lstrip()), len(below) - len(below.lstrip())
-            if below_depth < depth or (below_depth == depth and not below.lstrip().startswith("-")):
-                continue  # nothing nested under it: the value is null
-        return True
-    return False
+            if "\t" not in below[:below_depth] and (
+                    below_depth < depth or (below_depth == depth and not below.lstrip().startswith("-"))):
+                continue  # nothing nested under it, so the entry is empty
+        return "its waivers entry is not empty"
+    return None
 
 
 def stray_waivers(node, where=()):
@@ -286,6 +300,12 @@ def check_bash(command, agent, ours, short, cwd, book_root):
                               f"({', '.join(sorted(SAFE_READS))}) without shell syntax; the canon guard cannot check "
                               "what other commands change. Use the Read, Write and Edit tools.")
     return 0
+
+
+def needs_check(tool, agent):
+    """Whether the hook must run the checks: every file write, and a subagent's shell and MCP calls."""
+    tool = str(tool)
+    return tool in WRITE_TOOLS or (bool(agent) and (tool == "Bash" or tool.startswith("mcp__")))
 
 
 def mcp_reads_only(tool):
@@ -377,14 +397,14 @@ def main(data):
             # compared with them, so it might drop or alter the author's.
             if after:
                 problems.append(f"the book.waivers block of book/{rel}")
-            elif may_hold_waivers(old):
-                problems.append(f"book/{rel} while it cannot be read (its waivers line is not empty, so the canon "
-                                f"guard cannot check that the waivers survive the repair)")
+            elif waivers_doubt(old):
+                problems.append(f"book/{rel} while it cannot be read ({waivers_doubt(old)}, so the canon guard "
+                                f"cannot check that the waivers survive the repair)")
         elif before != after:
             problems.append(f"the book.waivers block of book/{rel}")
-    changed_anchor = anchor_change(old, new, exists)
+    changed_anchor = anchor_change(old, new, exists, markdown=not rel.endswith((".yaml", ".yml")))
     if changed_anchor is not None:
-        problems.append(f"⚓ text in book/{rel} (at \"{changed_anchor}\")")
+        problems.append(f"⚓ text in book/{rel} ({changed_anchor})")
     if rel == PREMISE:
         before_s, after_s = ns_book.book_settings(old), ns_book.book_settings(new)
         changed = [key for key in before_s if before_s[key] and before_s[key] != after_s[key]]
@@ -399,8 +419,9 @@ def main(data):
         return 0
     what = "; ".join(problems)
     if agent:
-        hint = (" Keep every existing ⚓ line exactly as it is and where it is, add none, and refer to \"the "
-                "anchored section\" in words." if changed_anchor is not None else "")
+        hint = (" Keep every existing ⚓ line exactly as it is and where it is (rewriting the line it sits under "
+                "counts as moving it), add none, and refer to \"the anchored section\" in words."
+                if changed_anchor is not None else "")
         return decide("deny", f"novelsmith: this would change {what}. Those are the author's decisions; agents never "
                               f"change them. Report the tension or write the proposal in book/proposals/.{hint}")
     return decide("ask", f"novelsmith: this changes {what}, which holds your decisions as the author. "
@@ -427,13 +448,11 @@ if __name__ == "__main__":
     payload = {}
     try:
         payload = json.loads(raw.decode("utf-8"))
-        tool, agent = payload.get("tool_name", ""), payload.get("agent_type")
-        if tool in WRITE_TOOLS or (agent and (tool == "Bash" or tool.startswith("mcp__"))):
+        if needs_check(payload.get("tool_name", ""), payload.get("agent_type")):
             sys.stdout.buffer.write(run(raw))  # the author's own shell and MCP calls need no check
     except Exception as exc:
-        tool = payload.get("tool_name", "") if isinstance(payload, dict) else ""
-        guarded = tool in WRITE_TOOLS + ("Bash",) or str(tool).startswith("mcp__")
-        if isinstance(payload, dict) and payload.get("agent_type") and guarded:
+        agent = payload.get("agent_type") if isinstance(payload, dict) else None
+        if agent and needs_check(payload.get("tool_name", ""), agent):
             # A subagent's call that cannot be checked is denied, not waved through.
             decide("deny", f"novelsmith: the canon guard could not check this call ({type(exc).__name__}: {exc}), "
                            f"so it is denied for subagents.")

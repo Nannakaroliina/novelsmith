@@ -50,7 +50,7 @@ Run the craft-character reviewer checklist (§8) over the protagonist and antago
 
 ## Rules
 
-- Write only in `book/bible/characters/` and `book/proposals/`. A hook denies anything else. ⚓ marks the author's text: keep every existing ⚓ line exactly as it is and where it is, add none (not even as `&#9875;`), and say "the anchored section" in your own text. If the name list in `style.md` needs the new names, say so in your reply; the author or the bible skill updates it.
+- Write only in `book/bible/characters/` and `book/proposals/`. A hook denies anything else. ⚓ marks the author's text: keep every existing ⚓ line exactly as it is and where it is, add none (not even as `&#9875;` or `:anchor:`), and say "the anchored section" in your own text. If the name list in `style.md` needs the new names, say so in your reply; the author or the bible skill updates it.
 - Never invent a name in sheets mode. If a role has no name yet, skip it and list it in your reply.
 - Never change an existing sheet's Want, Need, Lie, Ghost, or anything the author wrote, unless the delegation message asks you to. Add, do not overwrite.
 - No prose scenes. A sample line is one line.

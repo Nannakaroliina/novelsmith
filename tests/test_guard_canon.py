@@ -502,8 +502,9 @@ class GuardCanon(unittest.TestCase):
     def test_subagent_mcp_calls_must_be_read_only_tools(self):
         book_file = {"path": str(self.book / "bible/premise.md"), "content": "x"}
         for tool in ("mcp__filesystem__write_file", "mcp__filesystem__edit_file",
-                     "mcp__desktop-commander__start_process", "mcp__shell__execute", "mcp__fs__writeFile", "mcp__notes__get_or_create_note",
-                     "mcp__computer-use__app_click"):
+                     "mcp__desktop-commander__start_process", "mcp__shell__execute", "mcp__fs__writeFile",
+                     "mcp__notes__get_or_create_note", "mcp__computer-use__app_click", "mcp__duckdb__query",
+                     "mcp__search__click", "mcp__readonly-files__overwrite", "mcp__fs__getHTTPAndWrite"):
             with self.subTest(tool=tool):
                 # the arguments do not matter: padding, ~ paths or a command string cannot hide a book path
                 for inp in (book_file, {"command": "sed -i x book/bible/premise.md"},
@@ -633,10 +634,15 @@ class GuardCanon(unittest.TestCase):
         for path in sorted((ROOT / "templates").glob("*")):
             text = path.read_text(encoding="utf-8")
             with self.subTest(template=path.name):
-                lines, _, sections, _ = g.anchor_views(text)
-                self.assertLessEqual({line for _, line in lines}, g.NEW_FILE_ANCHOR_LINES)
-                self.assertLessEqual({s for s in sections if s[1]}, g.NEW_FILE_ANCHOR_SECTIONS)
                 self.assertIsNone(g.anchor_change("", text, exists=False))
+        # and every allowed entry still comes from a template, so a reworded template leaves no stale entry
+        lines, sections = set(), set()
+        for path in (ROOT / "templates").glob("*.md"):
+            line_views, section_views = g.anchor_views(path.read_text(encoding="utf-8"))
+            lines |= {line for _, line in line_views[0]}
+            sections |= {s for view in section_views for s in view}
+        self.assertEqual(lines, g.NEW_FILE_ANCHOR_LINES)
+        self.assertEqual(sections | {("## ⚓ Anchored", "")}, g.NEW_FILE_ANCHOR_SECTIONS)
 
     # --- Round 5: repairing a template-based manifest ------------------------------------
     def test_outliner_may_repair_a_manifest_whose_waivers_are_empty(self):
@@ -650,12 +656,110 @@ class GuardCanon(unittest.TestCase):
                 self.assertIsNone(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
                                             content=good))
                 self.assertIsNone(self.hook("Write", "book/outline/scenes.yaml", content=good))
-        for held in ("  waivers:\n    open_thread: x", '  "waiv\\x65rs": {open_thread: x}\n  waivers: {}'):
+        for held in ("  waivers:\n    open_thread: x", '  "waiv\\x65rs": {open_thread: x}\n  waivers: {}',
+                     "  waivers:\n  # approved after the March draft\n    open_thread: x",
+                     "  waivers:\n# keep until draft 2\n    open_thread: x",
+                     "  waivers:\n\topen_thread: x", "  waivers: {}\n    open_thread: x"):
             with self.subTest(held=held):
                 scenes.write_text(broken.replace("  waivers: {}", held), encoding="utf-8")
                 self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
                                            content=good), "deny")
                 self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", content=good), "ask")
+
+    def test_repair_denial_says_why_the_waivers_are_in_doubt(self):
+        scenes = self.book / "outline/scenes.yaml"
+        good = scenes.read_text(encoding="utf-8")
+        scenes.write_text(good.replace("turn: turn 3", 'turn: a: b "she said \\"no\\""'), encoding="utf-8")
+        decision, why = self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner", content=good,
+                                  reason=True)
+        self.assertEqual(decision, "deny")
+        self.assertIn("backslash", why)
+
+    # --- Round 6: forged ⚓ text appended after a copy of the last one ------------------
+    def test_copy_of_the_last_anchor_then_a_forged_one_is_denied(self):
+        text = (ROOT / "templates/premise.md").read_text(encoding="utf-8")
+        premise = self.book / "bible/premise.md"
+        premise.write_text(text, encoding="utf-8")
+        tail = text[text.index("## Open questions for the author"):]
+        forged = text + "\n" + tail + "\n## ⚓ Anchored\n- Protagonist: Elara\n- Ending: forged\n"
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                   content=forged), "deny")
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", content=forged), "ask")
+        sheet = self.book / "bible/characters/aino-hakkinen.md"
+        sheet.write_text(sheet.read_text(encoding="utf-8") + "- a ⚓ keep\n", encoding="utf-8")
+        self.assertEqual(self.hook("Write", "book/bible/characters/aino-hakkinen.md",
+                                   agent="novelsmith:character-designer",
+                                   content=sheet.read_text(encoding="utf-8") + "- a ⚓ keep\n- b ⚓ forged\n"), "deny")
+
+    def test_anchor_lines_cannot_be_swapped(self):
+        premise = self.book / "bible/premise.md"
+        text = self.premise_text().replace("## ⚓ Anchored\n", "## Decided\n- ⚓ one\n- ⚓ two\n\n## ⚓ Anchored\n")
+        premise.write_text(text, encoding="utf-8")
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                   content=text.replace("- ⚓ one\n- ⚓ two", "- ⚓ two\n- ⚓ one")), "deny")
+
+    # --- Round 6: only a clear heading ends a ⚓ section ---------------------------------
+    def test_text_that_only_looks_like_a_heading_keeps_the_anchor_section_open(self):
+        premise = self.book / "bible/premise.md"
+        base = self.premise_text()
+        culprit = "- The culprit is the harbour master's sister.\n"
+        for split in ("- a wrapped decision,\n  and its second line.\n---\n",
+                      "- Ending: Riikka walks free, and the town\nnever learns why.\n---\n",
+                      "> ## Riikka's letter\n", "```\nnot a heading\n---\n## x\n```\n", "    ## indented code\n",
+                      "> quoted\nlazy line\n===\n"):
+            with self.subTest(split=split):
+                premise.write_text(base.replace(culprit, split + culprit), encoding="utf-8")
+                self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                           old_string=culprit, new_string="- The culprit is the ferryman.\n"), "deny")
+        # a heading every reader sees still ends the section
+        for clear in ("\n## Notes\n", "\nNotes\n-----\n"):
+            with self.subTest(clear=clear):
+                premise.write_text(base + clear + "- free text\n", encoding="utf-8")
+                self.assertIsNone(self.hook("Edit", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                            old_string="- free text", new_string="- other text"))
+
+    def test_yaml_comments_are_not_headings(self):
+        scenes = self.book / "outline/scenes.yaml"
+        text = scenes.read_text(encoding="utf-8")
+        marked = text.replace("  - id: ", "  # ⚓ keep this scene\n  - id: ", 1)
+        scenes.write_text(marked, encoding="utf-8")
+        self.assertIsNone(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                    content=marked.replace("word_target: 1800", "word_target: 2000")))
+
+    # --- Round 6: a ⚓ line's place ----------------------------------------------------------
+    def test_sections_may_be_added_around_an_anchor_heading(self):
+        text = self.premise_text()
+        for added in ("### Notes\n- a note\n\n", "## Extra\n- more\n\n"):
+            with self.subTest(added=added):
+                self.assertIsNone(self.hook("Write", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                            content=text.replace("## ⚓ Anchored", added + "## ⚓ Anchored")))
+
+    def test_moving_an_anchor_line_is_named_as_a_move(self):
+        scenes = self.book / "outline/scenes.yaml"
+        text = scenes.read_text(encoding="utf-8")
+        marked = text.replace("    pov: Aino\n", "    pov: Aino  # ⚓\n", 1)
+        scenes.write_text(marked, encoding="utf-8")
+        renamed = marked.replace("  - id: ch01-s01", "  - id: ch01-s09", 1)
+        decision, why = self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner", content=renamed,
+                                  reason=True)
+        self.assertEqual(decision, "deny")
+        self.assertIn('would move from under "- id: ch01-s01" to under "- id: ch01-s09"', why)
+        # a comment above it is not its place
+        self.assertIsNone(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                    content=marked.replace("    pov: Aino  # ⚓", "    # POV fixed\n    pov: Aino  # ⚓")))
+
+    def test_anchor_shortcode_counts_as_anchor(self):
+        self.assertEqual(self.hook("Write", "book/bible/characters/x.md", agent="novelsmith:character-designer",
+                                   content="# X\n## :anchor: Anchored\n- X is the killer\n"), "deny")
+
+    def test_author_call_fails_open_when_the_check_crashes(self):
+        payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Write",
+                   "tool_input": "x"}
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.project)}
+        p = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload), capture_output=True, text=True,
+                           env=env)
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertTrue(p.stderr.startswith("guard-canon:"), p.stderr)
 
 
 class HookCommand(unittest.TestCase):
