@@ -3,7 +3,7 @@ name: novel-start
 description: Scaffold a new novel project (book/ tree, premise, style sheet, progress checkpoint) by interviewing the author. Use when the user wants to start a new novel, set up a book project, or says "new book" or "/novelsmith:novel-start".
 disable-model-invocation: true
 argument-hint: "[working title]"
-allowed-tools: Read, Write, Glob, AskUserQuestion
+allowed-tools: Read, Write(book/**), Glob, AskUserQuestion
 ---
 
 # Start a new novel
@@ -19,7 +19,7 @@ You are setting up the file-first state for a novel. The `book/` tree in the pro
    - POV and tense; the one-sentence premise if they have it; comparable titles.
    - Whether they have 2–3 samples of their own prose to paste into the style sheet (strongly encourage this: the samples calibrate voice and the de-AI baseline). If not now, leave the slots and note it in progress.md.
 
-3. **Create the tree** from the plugin's templates in `${CLAUDE_SKILL_DIR}/../../templates/`, filling `{{title}}`, `{{genre}}`, `{{target_words}}`, `{{author}}` with the interview answers. **Never overwrite a file that already exists**: create only the missing ones and tell the author which you skipped:
+3. **Create the tree** from the plugin's templates in `${CLAUDE_SKILL_DIR}/../../templates/`, filling `{{title}}`, `{{genre}}`, `{{target_words}}`, `{{author}}` with the interview answers. **Never overwrite a file that already exists**: create only the missing ones and tell the author which you skipped. Create files only, with Write, and never use the shell: the folders marked "(empty)" appear when the first file is written into them, so mention that rather than creating them:
 
    ```text
    book/

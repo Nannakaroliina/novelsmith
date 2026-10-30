@@ -61,19 +61,25 @@ def frontmatter_problems(path, is_skill):
 
 
 def tracked_files(root):
-    """Files git tracks under root, or None when root is not a git checkout."""
+    """Files git tracks under root, or None when root is not a git checkout. Refuses when git fails in one."""
     try:
-        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError):
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True,
+                             timeout=30).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        if (root / ".git").exists():
+            detail = getattr(exc, "stderr", b"") or b""
+            sys.exit(f"refusing to build: git could not list the committed files ({exc}; "
+                     f"{detail.decode('utf-8', 'replace').strip()})")
         return None
     return {name for name in out.decode("utf-8", errors="surrogateescape").split("\0") if name}
 
 
 def select_files(root, tracked):
     """(files to ship, secret-looking paths) from the allowlist, limited to tracked files when known."""
-    candidates = [root / name for name in INCLUDE_FILES if (root / name).is_file()]
+    candidates = [root / name for name in INCLUDE_FILES if (root / name).is_file() or (root / name).is_symlink()]
     for d in INCLUDE_DIRS:
-        candidates += [p for p in (root / d).rglob("*") if p.is_file()] if (root / d).is_dir() else []
+        if (root / d).is_dir():
+            candidates += [p for p in (root / d).rglob("*") if p.is_file() or p.is_symlink()]
     files, secrets = [], []
     for p in sorted(candidates):
         rel = p.relative_to(root).as_posix()
@@ -84,7 +90,8 @@ def select_files(root, tracked):
             continue
         if tracked is not None and rel not in tracked:
             continue
-        (secrets if SECRET_RE.search(rel) else files).append(p)
+        # A symbolic link would pack whatever it points at (a manuscript, a key), so it is refused too.
+        (secrets if SECRET_RE.search(rel) or p.is_symlink() else files).append(p)
     return files, secrets
 
 
@@ -101,7 +108,7 @@ def main():
         print("build_zip: not a git checkout (or git unavailable); packing every allowlisted file on disk, "
               "including uncommitted ones", file=sys.stderr)
     files, secrets = select_files(ROOT, tracked)
-    problems += [f"{p.relative_to(ROOT).as_posix()}: looks like a secret; remove it from the plugin" for p in secrets]
+    problems += [f"{p.relative_to(ROOT).as_posix()}: looks like a secret or is a symbolic link; remove it from the plugin" for p in secrets]
     if problems:
         sys.exit("refusing to build:\n" + "\n".join(f"- {x}" for x in problems))
 

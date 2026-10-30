@@ -255,12 +255,12 @@ def _scalar(raw, line):
         return None
     if s[0] == "[":
         if not s.endswith("]"):
-            raise YAMLError("multi-line flow lists need PyYAML (pip install pyyaml)", line)
+            raise YAMLError("put this [ … ] list on one line, or write it as '- item' lines", line)
         inner = s[1:-1].strip()
         return [] if not inner else [_scalar(p, line) for p in _split_top(inner, ",")]
     if s[0] == "{":
         if not s.endswith("}"):
-            raise YAMLError("multi-line flow maps need PyYAML (pip install pyyaml)", line)
+            raise YAMLError("put this { … } map on one line, or write it as 'key: value' lines", line)
         inner = s[1:-1].strip()
         out = {}
         for part in ([] if not inner else _split_top(inner, ",")):
@@ -295,7 +295,7 @@ def _scalar(raw, line):
     if s[0] in "&*":
         raise YAMLError("anchors (&name) and aliases (*name) are not allowed in book files", line)
     if s[0] in "!%@`":
-        raise YAMLError(f"YAML feature {s[0]!r} needs PyYAML (pip install pyyaml)", line)
+        raise YAMLError(f"remove the YAML tag or directive starting with {s[0]!r}, or quote the value", line)
     if ": " in s or s.endswith(":"):
         raise YAMLError("mapping values are not allowed here; quote a value that contains ': '", line)
     if _TIMESTAMP.match(s):

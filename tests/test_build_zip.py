@@ -32,6 +32,14 @@ class SelectFiles(unittest.TestCase):
                                             ".claude-plugin/plugin.json"})
         self.assertEqual(self.rels(secrets), {"scripts/server.key"})
 
+    def test_symlinks_are_refused(self):
+        (self.root / "book/bible/style.md").write_text("my prose", encoding="utf-8")
+        (self.root / "templates").mkdir(exist_ok=True)
+        (self.root / "templates/notes.md").symlink_to(self.root / "book/bible/style.md")
+        files, refused = build_zip.select_files(self.root, None)
+        self.assertIn("templates/notes.md", self.rels(refused))
+        self.assertNotIn("templates/notes.md", self.rels(files))
+
     def test_untracked_files_stay_out(self):
         files, _ = build_zip.select_files(self.root, {"skills/s/SKILL.md", "README.md"})
         self.assertEqual(self.rels(files), {"skills/s/SKILL.md", "README.md"})

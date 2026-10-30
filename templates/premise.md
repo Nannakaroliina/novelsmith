@@ -20,7 +20,7 @@ One sentence: protagonist + goal + opposition + stakes.
 What emotional experience the book guarantees (the genre contract), stated plainly.
 
 ## Controlling idea (theme as a cause-and-effect sentence)
-"<Value> prevails/fails when <action> because <reason>."
+"[Value] prevails/fails when [action] because [reason]."
 
 ## Counter-idea
 The opposite claim. It MUST win at least some scenes.

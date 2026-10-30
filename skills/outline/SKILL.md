@@ -3,7 +3,7 @@ name: outline
 description: Run novelsmith's outline-first stages with author checkpoints — stage 1 (premise, theme, ending and act beats via the story-architect agent, starting from five or more divergent directions) and stage 3 (chapters and the scene manifest via the outliner agent, validated by scripts/validate-outline.py). Use when the author says "/novelsmith:outline", wants to shape the premise or ending, plan acts, chapters or scenes, build or fix scenes.yaml, or validate the outline before drafting.
 disable-model-invocation: true
 argument-hint: "[premise|scenes|check]"
-allowed-tools: Read, Glob, Grep, Edit, Agent, AskUserQuestion
+allowed-tools: Read, Glob, Grep, Edit(book/**), Agent, AskUserQuestion
 ---
 
 # Outline: premise → acts → scenes
@@ -18,7 +18,7 @@ Validator command (used below):
 python3 "<plugin root>/scripts/validate-outline.py" --book book
 ```
 
-Run it exactly as written, with nothing added. The author may be asked to allow it (it is not pre-approved, so nothing else can ride on the permission); if they decline, say the validator did not run and offer the manual check below.
+Run it exactly as written, with nothing added. It is not pre-approved, so nothing else can ride on the permission. Before the first run in a stage, tell the author in one plain sentence: "You'll be asked to allow a Python command that checks the outline; it only reads book/." If they decline, do not ask again in this run: say the validator did not run and offer the manual check below.
 
 Exit codes: 0 PASS, 1 FAIL (findings to fix), 2 the book could not be read. On exit 2, show the author its stderr line word for word (it names the file, the line and the fix, such as quoting a value that contains `: `) and stop; this is neither a pass nor a fail. Only if the command itself cannot run (python3 or the script not found, exit 126 or 127) is the validator unavailable: then apply `${CLAUDE_SKILL_DIR}/references/validator-rules.md` by reading the files, and label the result "manual check" wherever you report it.
 
@@ -43,7 +43,7 @@ Exit codes: 0 PASS, 1 FAIL (findings to fix), 2 the book could not be read. On e
 1. **Preconditions** (read the files): the ending is decided; the beat table is filled; `book/bible/characters/` holds at least the protagonist and antagonist sheets. If one is missing, name it and the command that fixes it, and stop.
 2. Launch the `novelsmith:outliner` agent with: "Build (or repair) book/outline/scenes.yaml and chapters.md, validate, and write the de-AI outline check. Today is <date>." Add any author instructions verbatim (for example "keep chapters short", "no prologue").
 3. **Verify yourself**: run the validator command. Read `book/critiques/outline/de-ai-outline-<date>.md`.
-4. If the validator fails on something the outliner reported needing from the author (a missing character, an ending decision), say exactly what is needed. If it fails for any other reason, send the outliner back once with the validator output. Never edit `book.waivers` yourself; if the author wants to waive a check, they say so in their own words and you add the waiver with their reason, which the canon guard will ask them to confirm.
+4. On exit 2 (the book could not be read), show the author the stderr line and send the outliner back once with it to repair that line; if the line is in a file the outliner may not write, offer to fix it yourself on the author's yes. If the validator fails on something the outliner reported needing from the author (a missing character, an ending decision), say exactly what is needed. If it fails for any other reason, send the outliner back once with the validator output. Never edit `book.waivers` yourself; if the author wants to waive a check, they say so in their own words and you add the waiver with their reason, which the canon guard will ask them to confirm.
 5. **Checkpoint.** Tell the author: the validator result (PASS/FAIL, error and warning counts), the de-AI outline score (three or more failed checks means revise the outline before drafting), the warnings worth their attention, and where the files are. Update `book/progress.md`: current stage 3 (or 4 once the author approves the outline), next action "review book/outline/scenes.yaml; approve or edit", and a decisions-log row. Drafting (`/novelsmith:draft`) arrives in Phase 3; say so if the author asks what is next. Stop.
 
 ## 3. Stage `check`

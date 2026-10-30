@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v python3 >/dev/null 2>&1 && [ -f \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\" ] || exit 0; python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\"",
+            "command": "python3 -V >/dev/null 2>&1 && [ -f \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\" ] || exit 0; python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-canon.py\"",
             "timeout": 10
           }
         ]
