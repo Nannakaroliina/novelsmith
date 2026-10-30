@@ -73,12 +73,17 @@ VALIDATOR = HERE / "validate-outline.py"
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
 SHELL_TOOLS = ("Bash", "PowerShell")
 NOTEBOOK_TOOL = "NotebookEdit"
-# Tools that only read, ask or plan, which subagents may use freely. In a book project any other tool a
-# subagent calls, including ones Claude Code adds later, is checked (rules 1-4) or denied.
-SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "NotebookRead", "TodoWrite", "TodoRead", "WebFetch", "WebSearch",
-              "Skill", "ToolSearch", "AskUserQuestion", "Agent", "Task", "TaskOutput", "BashOutput",
-              "KillShell", "KillBash", "TaskStop", "SendMessage", "ListMcpResourcesTool", "ReadMcpResourceTool",
+# Tools that only read, ask, plan or report back, which subagents may use freely. Any other tool a subagent
+# calls in a book project, including ones Claude Code adds later, is checked (rules 1-4), or denied when its
+# input names a file, a folder, a command or code (RISKY_INPUT), since the guard cannot see what it changes.
+SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "LSP", "NotebookRead", "TodoWrite", "TodoRead", "TaskCreate",
+              "TaskUpdate", "TaskList", "TaskGet", "WebFetch", "WebSearch", "Skill", "ToolSearch", "AskUserQuestion",
+              "Agent", "Task", "TaskOutput", "BashOutput", "KillShell", "KillBash", "TaskStop", "SendMessage",
+              "SubagentHandback", "StructuredOutput", "ListMcpResourcesTool", "ReadMcpResourceTool",
               "EnterPlanMode", "ExitPlanMode"}
+RISKY_INPUT = {"command", "cmd", "script", "code", "filepath", "path", "paths", "notebookpath", "filename", "file",
+               "files", "dir", "directory", "cwd", "content", "target", "destination", "source"}
+YAML_BREAKS = re.compile("[\x85\u2028\u2029]")  # line breaks to YAML that the guard's line view does not split on
 PYTHONS = {"python3", "python"}
 DEADLINE = 6.0
 MAX_CHARS = 1_000_000
@@ -149,6 +154,18 @@ def locate(path, book_root):
     return None
 
 
+def target(raw, cwd, book_root):
+    """(resolved path, path inside book/ or None) for a tool's file argument. It is in the book if the path as
+    written (~ expanded, normalised) or the file it resolves to lies in book/, so a folder in the book that is a
+    symlink to elsewhere (a series bible shared between books) is still the book."""
+    written = Path(os.path.normpath(os.path.join(str(cwd), os.path.expanduser(raw))))
+    path = written.resolve()
+    rel = locate(path, book_root)
+    if rel is None:
+        rel = book_relative(written, Path(os.path.normpath(str(book_root))))
+    return path, rel
+
+
 def is_book_project(book_root):
     """A novelsmith book: book/ holding a file novel-start writes. Another tool's book/ folder (mdBook,
     Jupyter Book) is not one, so subagents there keep their usual tools."""
@@ -163,9 +180,15 @@ def read_raw(path):
         return f.read()
 
 
-def line_ending_problem(tool, inp, raw_old):
-    """Why carriage returns could make the real tool change other text than the guard checks (the guard
-    compares text with every line ending as a plain line break), or None."""
+def line_ending_problem(tool, inp, raw_old, yaml=False):
+    """Why line endings could make the real tool, or the YAML reader, see other text than the guard checks (the
+    guard compares text with every line ending as a plain line break), or None."""
+    if yaml:
+        written = [inp.get("content")] if tool == "Write" else [
+            x for e in ((inp.get("edits") if tool == "MultiEdit" else [inp]) or []) if isinstance(e, dict)
+            for x in (e.get("old_string"), e.get("new_string"))]
+        if YAML_BREAKS.search(raw_old) or any(isinstance(x, str) and YAML_BREAKS.search(x) for x in written):
+            return "the text holds a line break that YAML counts and the guard does not (U+0085, U+2028 or U+2029)"
     if tool == "Write":
         content = inp.get("content")
         return ("the new text holds a carriage return that is not part of a line break"
@@ -306,22 +329,40 @@ def stray_waivers(node, where=()):
 
 
 def waivers_of(text):
-    """(waivers, problem): book.waivers as parsed data, or a reason it cannot be read safely."""
+    """(waivers, problem, data): book.waivers and the whole manifest as parsed data, or a reason it cannot be
+    read safely."""
     if not text.strip():
-        return {}, None
+        return {}, None, {}
     import ns_yaml  # here, so the hook's other calls do not load PyYAML
     try:
         data = ns_yaml.load(text)
         if not isinstance(data, dict):
-            return None, "is not a mapping"
+            return None, "is not a mapping", None
         if stray_waivers(data):
-            return None, "has a 'waivers' key outside book"
+            return None, "has a 'waivers' key outside book", None
     except Exception as exc:  # any failure means the waivers cannot be checked
-        return None, f"cannot be read safely ({exc})"
+        return None, f"cannot be read safely ({exc})", None
     book = data.get("book") or {}
     if not isinstance(book, dict):
-        return None, "has a 'book' that is not a mapping"
-    return book.get("waivers") or {}, None
+        return None, "has a 'book' that is not a mapping", None
+    return book.get("waivers") or {}, None, data
+
+
+def anchored_values(node, where=()):
+    """Every key or text value holding ⚓ in parsed YAML, with where it sits (a scene by its id, not its place in
+    the list): a value swallowed into another field's quoted text, or moved to another scene, changes this."""
+    out = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if ns_book.ANCHOR in ns_book.decode_anchor(str(k)):
+                out.append((where, str(k)))
+            out.extend(anchored_values(v, where + (str(k),)))
+    elif isinstance(node, list):
+        for i, x in enumerate(node):
+            out.extend(anchored_values(x, where + (f"id {x['id']}" if isinstance(x, dict) and "id" in x else str(i),)))
+    elif isinstance(node, str) and ns_book.ANCHOR in ns_book.decode_anchor(node):
+        out.append((where, node))
+    return sorted(out)
 
 
 def decide(decision, reason):
@@ -331,6 +372,14 @@ def decide(decision, reason):
         "permissionDecisionReason": reason,
     }}), flush=True)
     return 0
+
+
+def subagent_of(payload):
+    """The subagent's name, or "" for the main conversation. Claude Code sends agent_id only from a subagent;
+    a main conversation started as an agent (claude --agent) sends agent_type alone and is still the author."""
+    if not isinstance(payload, dict) or not payload.get("agent_id"):
+        return ""
+    return str(payload.get("agent_type") or "subagent").strip()
 
 
 def is_validator_command(command, cwd):
@@ -392,6 +441,13 @@ def check_bash(command, agent, ours, short, cwd, book_root):
     return 0
 
 
+def touches_files(inp):
+    """True if a tool's input names a file, a folder, a command or code (keys compared without case or _)."""
+    if not isinstance(inp, dict):
+        return True
+    return any(re.sub(r"[^a-z]", "", str(k).casefold()) in RISKY_INPUT for k in inp)
+
+
 def needs_check(tool, agent):
     """Whether the hook must run the checks: every file write, and any subagent call but a known read."""
     tool = str(tool)
@@ -423,7 +479,7 @@ def main(data):
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
     book_root = project / "book"
 
-    agent = (data.get("agent_type") or "").strip()
+    agent = subagent_of(data)
     short = agent.split(":")[-1] if agent else ""
     # A bare name ("outliner") is taken as novelsmith's only in a book project: elsewhere it is someone else's.
     ours = agent.startswith("novelsmith:") or (short in AGENT_SCOPES and ":" not in agent
@@ -441,16 +497,15 @@ def main(data):
         return check_mcp(tool, agent, book_root)
 
     if tool not in WRITE_TOOLS + (NOTEBOOK_TOOL,):
-        if agent and tool not in SAFE_TOOLS and (ours or is_book_project(book_root)):
-            return decide("deny", f"novelsmith: in a book project, subagents may use only tools the canon guard "
-                                  f"knows; {tool} could change book files it cannot check. Use the Read, Write and "
-                                  f"Edit tools, or report what you need.")
+        if agent and tool not in SAFE_TOOLS and touches_files(inp) and (ours or is_book_project(book_root)):
+            return decide("deny", f"novelsmith: in a book project, subagents may not use {tool} on files or commands; "
+                                  f"the canon guard cannot check what it changes. Use the Read, Write and Edit tools, "
+                                  f"or report what you need.")
         return 0
     raw = inp.get("notebook_path" if tool == NOTEBOOK_TOOL else "file_path")
     if not raw:
         return 0
-    path = (cwd / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
-    rel = locate(path, book_root)
+    path, rel = target(raw, cwd, book_root)
     if rel is None:
         if ours:
             return decide("deny", f"novelsmith: {short} writes only under book/; {raw} is outside the book.")
@@ -481,7 +536,7 @@ def main(data):
     raw_old = read_raw(path)
     old = ns_book.normalize(raw_old)
     new, exact = apply_edits(old, tool, inp)
-    endings = line_ending_problem(tool, inp, raw_old)
+    endings = line_ending_problem(tool, inp, raw_old, yaml=rel.endswith((".yaml", ".yml")))
     if endings and agent:
         return decide("deny", f"novelsmith: {endings} in book/{rel}, so the canon guard cannot tell which text the "
                               f"real edit changes. Use plain line breaks and copy the text exactly.")
@@ -500,10 +555,15 @@ def main(data):
         return decide("ask", f"novelsmith: this edit would make book/{rel} larger than the canon guard checks "
                              f"({MAX_CHARS:,} characters). Allow it only if you asked for this change.")
 
-    problems = []
+    problems, anchored_value = [], None
     if rel == SCENES:
-        before, bad_old = waivers_of(old)
-        after, bad_new = waivers_of(new)
+        before, bad_old, old_data = waivers_of(old)
+        after, bad_new, new_data = waivers_of(new)
+        if not bad_old and not bad_new:
+            diff = first_difference(anchored_values(old_data), anchored_values(new_data))
+            if diff:
+                where, value = diff[1] or diff[0]
+                anchored_value = f"⚓ text in book/{rel} (the value at {quoted(' > '.join(where))}, {quoted(value)})"
         if bad_new:
             if agent or before or (bad_old and waivers_doubt(old)):
                 problems.append(f"book/{rel}, which {bad_new} after this change, so its waivers cannot be checked")
@@ -520,6 +580,8 @@ def main(data):
     changed_anchor = anchor_change(old, new, exists, markdown=not rel.endswith((".yaml", ".yml")))
     if changed_anchor is not None:
         problems.append(f"⚓ text in book/{rel} ({changed_anchor})")
+    elif anchored_value:
+        problems.append(anchored_value)
     if rel == PREMISE:
         before_s, after_s = ns_book.book_settings(old), ns_book.book_settings(new)
         changed = [key for key in before_s if before_s[key] and before_s[key] != after_s[key]]
@@ -536,7 +598,7 @@ def main(data):
     if agent:
         hint = (" Keep every existing ⚓ line exactly as it is and where it is (rewriting the line it sits under "
                 "counts as moving it), add none, and refer to \"the anchored section\" in words."
-                if changed_anchor is not None else "")
+                if changed_anchor is not None or anchored_value else "")
         return decide("deny", f"novelsmith: this would change {what}. Those are the author's decisions; agents never "
                               f"change them. Report the tension or write the proposal in book/proposals/.{hint}")
     return decide("ask", f"novelsmith: this changes {what}, which holds your decisions as the author. "
@@ -565,8 +627,7 @@ def writes_book(payload):
     try:
         cwd = Path(payload.get("cwd") or os.getcwd())
         project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
-        path = (cwd / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
-        return locate(path, project / "book") is not None
+        return target(raw, cwd, project / "book")[1] is not None
     except Exception:  # cannot tell: treat it as the book's
         return True
 
@@ -577,16 +638,16 @@ def cli(raw):
     try:
         payload = json.loads(raw.decode("utf-8"))
         parsed = True
-        if needs_check(payload.get("tool_name", ""), payload.get("agent_type")):
+        if needs_check(payload.get("tool_name", ""), subagent_of(payload)):
             sys.stdout.buffer.write(run(raw))  # the author's own shell and MCP calls need no check
         return 0
     except Exception as exc:
         if not isinstance(payload, dict):
             payload = {}
-        tool, agent = payload.get("tool_name", ""), payload.get("agent_type")
+        tool, agent = payload.get("tool_name", ""), subagent_of(payload)
         why = f"{type(exc).__name__}: {exc}"
         if not parsed:  # nothing could be read (too deeply nested, not UTF-8): go by the raw text
-            agent = agent or b'"agent_type"' in raw
+            agent = agent or b'"agent_id"' in raw
             if not agent and b'"file_path"' in raw:
                 decide("ask", f"novelsmith: the canon guard could not read this call ({why}). Allow it only if "
                               f"you asked for this change.")

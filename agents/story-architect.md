@@ -26,7 +26,7 @@ The delegation message says which mode to run. If it does not, choose **options*
 
 ## Mode: options
 
-Write `book/proposals/premise-<YYYY-MM-DD>.md` containing **at least five** directions. They must differ in kind, not in degree. Across the set, include:
+Write `book/proposals/premise-<YYYY-MM-DD>.md` (if that file exists, `premise-<YYYY-MM-DD>-2.md`, then `-3`; never overwrite an earlier set, and number this set's directions on from the last one, e.g. 6–10) containing **at least five** directions. They must differ in kind, not in degree. Across the set, include:
 
 - at least one fall-ending shape (Riches to Rags, Icarus or Oedipus) and at least one rise-ending shape;
 - at least one ending where the decisive resolution is not driven by the protagonist;

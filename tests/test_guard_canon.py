@@ -849,7 +849,7 @@ class GuardCanon(unittest.TestCase):
                 payload = {"cwd": str(self.project), "tool_name": "Write",
                            "tool_input": {"file_path": str(self.project / rel), "content": "x"}}
                 if agent:
-                    payload["agent_type"] = agent
+                    payload.update(agent_id="a1", agent_type=agent)
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                     got = g.cli(json.dumps(payload).encode())
@@ -895,9 +895,10 @@ class GuardCanon(unittest.TestCase):
     def test_input_that_cannot_be_read_is_judged_by_its_text(self):
         deep = "[" * 200_000 + "]" * 200_000
         for raw, decision, code in (
-                ('{"tool_name": "mcp__fs__write_file", "agent_type": "general-purpose", "tool_input": {"x": %s}}'
-                 % deep, "deny", 0),
-                (b'{"tool_name": "Write", "agent_type": "general-purpose", "tool_input": {"x": "\xff"}}', "deny", 0),
+                ('{"tool_name": "mcp__fs__write_file", "agent_id": "a1", "agent_type": "general-purpose", '
+                 '"tool_input": {"x": %s}}' % deep, "deny", 0),
+                (b'{"tool_name": "Write", "agent_id": "a1", "agent_type": "general-purpose", "tool_input": '
+                 b'{"x": "\xff"}}', "deny", 0),
                 ('{"tool_name": "Write", "tool_input": {"file_path": "book/bible/premise.md", "x": %s}}' % deep,
                  "ask", 0),
                 ("not json", None, 1)):
@@ -933,6 +934,86 @@ class GuardCanon(unittest.TestCase):
                             .encode("utf-8"))
         self.assertEqual(self.hook("Edit", "book/bible/premise.md", old_string=culprit + "\n",
                                    new_string="the ferryman.\n"), "ask")
+
+    # --- Round 9 -------------------------------------------------------------------------------
+    def test_subagents_can_report_back_and_plan(self):
+        for agent in ("novelsmith:outliner", "general-purpose"):
+            for tool, inp in (("SubagentHandback", {"message": "done"}), ("TaskCreate", {"subject": "x"}),
+                              ("TaskUpdate", {"taskId": "1", "status": "completed"}), ("LSP", {"operation": "x"}),
+                              ("StructuredOutput", {"result": "x"}), ("SomeNewTool", {"query": "x"})):
+                with self.subTest(agent=agent, tool=tool):
+                    self.assertIsNone(self.hook(tool, None, agent=agent, tool_input_override=inp))
+        # an unfamiliar tool that names a file or a command is still denied
+        for inp in ({"filePath": "book/bible/premise.md"}, {"cmd": "rm -rf book"}, {"code": "open('x','w')"}):
+            with self.subTest(inp=inp):
+                self.assertEqual(self.hook("SomeNewTool", None, agent="general-purpose", tool_input_override=inp),
+                                 "deny")
+
+    def test_a_main_conversation_run_as_an_agent_is_the_author(self):
+        payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Write",
+                   "agent_type": "my-main-agent",
+                   "tool_input": {"file_path": str(self.book / "bible/style.md"), "content": "# Style\n"}}
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.project)}
+        p = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload), capture_output=True, text=True,
+                           env=env)
+        self.assertEqual((p.returncode, p.stdout), (0, ""), p.stderr)
+        payload["tool_name"], payload["tool_input"] = "Bash", {"command": "git status"}
+        p = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload), capture_output=True, text=True,
+                           env=env)
+        self.assertEqual((p.returncode, p.stdout), (0, ""), p.stderr)
+
+    def test_a_home_relative_path_reaches_the_book(self):
+        payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project / "src"), "tool_name": "Write",
+                   "agent_id": "a1", "agent_type": "general-purpose",
+                   "tool_input": {"file_path": "~/book/bible/premise.md", "content": "x"}}
+        p = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload), capture_output=True, text=True,
+                           env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.project), "HOME": str(self.project)})
+        self.assertEqual(json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_a_folder_in_the_book_that_links_elsewhere_is_still_the_book(self):
+        import shutil
+        series = self.project / "series-world"
+        shutil.move(str(self.book / "bible/world"), str(series)) if (self.book / "bible/world").exists() \
+            else series.mkdir()
+        (series / "harbour.md").write_text("# Harbour\n## ⚓ Anchored\n- The harbour freezes in March.\n",
+                                          encoding="utf-8")
+        (self.book / "bible/world").symlink_to(series)
+        wipe = "# Harbour\n- The harbour never freezes.\n"
+        self.assertEqual(self.hook("Write", "book/bible/world/harbour.md", agent="general-purpose", content=wipe),
+                         "deny")
+        self.assertEqual(self.hook("Write", "book/bible/world/harbour.md", agent="novelsmith:worldbuilder",
+                                   content=wipe), "deny")  # the ⚓ section, not the scope, stops it
+        self.assertEqual(self.hook("Write", "book/bible/world/harbour.md", content=wipe), "ask")
+        self.assertIsNone(self.hook("Write", "book/bible/world/port.md", agent="novelsmith:worldbuilder",
+                                    content="# Port\n"))
+
+    def test_yaml_line_breaks_the_guard_cannot_see_are_refused(self):
+        scenes = self.book / "outline/scenes.yaml"
+        text = scenes.read_text(encoding="utf-8")
+        scenes.write_text(text.replace("    pov: Aino\n", "    pov: Aino\n    goal_note: ⚓ Ann must leave\n", 1),
+                          encoding="utf-8")
+        for brk in ("\u2028", "\x85", "\u2029"):
+            with self.subTest(brk=repr(brk)):
+                edit = dict(old_string="    pov: Aino\n    goal_note:",
+                            new_string=f"    pov: Aino{brk}  - id: ch99-s01\n    goal_note:")
+                self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", agent="novelsmith:outliner", **edit),
+                                 "deny")
+                self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", **edit), "ask")
+
+    def test_an_anchored_yaml_value_cannot_be_swallowed_by_a_quote(self):
+        scenes = self.book / "outline/scenes.yaml"
+        text = scenes.read_text(encoding="utf-8")
+        marked = text.replace("    pov: Aino\n", "    pov: Aino\n    goal_note: ⚓ Ann must leave\n    mood: calm\n", 1)
+        scenes.write_text(marked, encoding="utf-8")
+        swallowed = marked.replace("    pov: Aino\n    goal_note:", "    pov: 'Aino\n    goal_note:", 1).replace(
+            "    mood: calm\n", "    mood: calm'\n", 1)
+        self.assertEqual(self.hook("Write", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   content=swallowed), "deny")
+        g = guard_module()
+        self.assertNotEqual(g.anchored_values({"scenes": [{"id": "s1", "goal": "⚓ x"}]}),
+                            g.anchored_values({"scenes": [{"id": "s1", "pov": "Ann goal: ⚓ x"}]}))
+        self.assertEqual(g.anchored_values({"scenes": [{"id": "s1", "goal": "⚓ x"}, {"id": "s2"}]}),
+                         g.anchored_values({"scenes": [{"id": "s2"}, {"id": "s1", "goal": "⚓ x"}]}))
 
 
 class HookCommand(unittest.TestCase):

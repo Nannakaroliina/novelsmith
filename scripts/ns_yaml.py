@@ -128,7 +128,7 @@ _INT = re.compile(r"""^(?:[-+]?0b[0-1_]+
                    |[-+]?0x[0-9a-fA-F_]+
                    |[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$""", re.X)
 _FLOAT = re.compile(r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
-                     |\.[0-9_]+(?:[eE][-+][0-9]+)?
+                     |\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?
                      |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
                      |[-+]?\.(?:inf|Inf|INF)
                      |\.(?:nan|NaN|NAN))$""", re.X)
@@ -361,6 +361,8 @@ def _scalar(raw, line, depth=1):
         return value
     if s[0] == "'":
         return s[1:-1].replace("''", "'")
+    if s in ("=", "<<"):
+        raise YAMLError(f"quote the value {s!r}; PyYAML reads it as a YAML marker, not text", line)
     if s in ("~", "null", "Null", "NULL"):
         return None
     if s in _BOOLS:

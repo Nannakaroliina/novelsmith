@@ -25,7 +25,7 @@ The delegation message says which mode to run. If it does not: choose **cast** w
 
 ## Mode: cast
 
-Write `book/proposals/cast-<YYYY-MM-DD>.md`:
+Write `book/proposals/cast-<YYYY-MM-DD>.md` (if that file exists, `cast-<YYYY-MM-DD>-2.md`, then `-3`; never overwrite an earlier set):
 
 - The roles the book needs, derived from the acts and the genre: protagonist, antagonist (who wants the same object as the protagonist and can argue the counter-idea), the B-story character, the subplot carriers, and for a mystery the 3–7 suspects including the culprit. One line per role on what the role must do in the plot.
 - For each role without an author-given name, **five name candidates** drawn from the setting's real naming conventions (region, era, class, language; for Finland, real surnames and given names by region and generation, with ä/ö kept). Give the reason each fits. Never offer a name from the banned list in `style.md` or `<plugin root>/skills/de-ai/references/outline-level.md` §13; no two major characters may share a first initial; no unnamed trade-name characters ("the keeper").

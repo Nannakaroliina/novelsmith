@@ -107,7 +107,7 @@ def tag(v):
 
 def read(path):
     """Read a bible file; a stray non-UTF-8 byte must not take down the run."""
-    return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    return path.read_text(encoding="utf-8-sig", errors="replace") if path.is_file() else ""  # -sig: a BOM is no text
 
 
 LOOKALIKE_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN"}
@@ -119,8 +119,16 @@ def suspicious_name(name):
     Only Latin, Cyrillic, Greek and Armenian share look-alike letters; mixing other scripts is
     normal writing (田中さくら mixes kanji and kana) and modifier letters like the ʻokina are fine.
     """
-    if any(unicodedata.category(ch) == "Cf" for ch in name):
-        return "contains an invisible formatting character"
+    for i, ch in enumerate(name):
+        if unicodedata.category(ch) != "Cf":
+            continue
+        # Zero-width (non-)joiners are spelling in Sinhala, Persian and Indic names: allowed between letters or
+        # marks of those scripts, never inside a look-alike alphabet.
+        joins = ch in "\u200c\u200d" and 0 < i < len(name) - 1 and all(
+            unicodedata.category(c)[0] in "LM" and unicodedata.name(c, "UNKNOWN").split()[0] not in LOOKALIKE_SCRIPTS
+            for c in (name[i - 1], name[i + 1]))
+        if not joins:
+            return "contains an invisible formatting character"
     scripts = set()
     for ch in name:
         if ch.isalpha() and unicodedata.category(ch) != "Lm":
@@ -449,7 +457,7 @@ def validate(book):
     acts_path = book / "outline" / "acts.md"
     acts = strip_html_comments(read(acts_path))
     open_md = section(acts, "Threads the book leaves open")
-    open_items = [l for l in open_md.splitlines() if re.match(r"^\s*[-*]\s+\S", l)]
+    open_items = [l for l in open_md.splitlines() if re.match(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\S", l)]
     if "open_thread" not in all_flags and not open_items:
         rep.error("open_thread", "no thread is left open at the end", "acts.md / flags",
                   "Choose a subplot or secondary relationship, remove its resolving scene, and list it in acts.md.")

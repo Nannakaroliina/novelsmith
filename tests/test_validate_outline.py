@@ -73,6 +73,30 @@ class ValidateOutline(unittest.TestCase):
                 code, out, err = run(self.book)
                 self.assertEqual(out["stats"]["mystery"], mystery, err)
 
+    def test_names_that_need_joiners_are_spelling(self):
+        for name in ("Dara نیک\u200cبخت", "ශ්\u200dරීයානි"):
+            with self.subTest(name=name):
+                (self.book / "bible/characters/joiner.md").write_text(f"# {name}\n", encoding="utf-8")
+                code, out, err = run(self.book)
+                self.assertNotIn("names", checks(out), out["findings"])
+        (self.book / "bible/characters/joiner.md").write_text("# Ai\u200dno Koski\n", encoding="utf-8")
+        self.assert_error("names")
+
+    def test_a_sheet_saved_with_a_bom_keeps_its_heading(self):
+        sheet = self.book / "bible/characters/aino-hakkinen.md"
+        sheet.write_bytes(b"\xef\xbb\xbf" + sheet.read_bytes())
+        code, out, err = run(self.book)
+        self.assertEqual(code, 0, out and out["findings"] or err)
+
+    def test_open_threads_may_use_any_list_marker(self):
+        acts = self.book / "outline/acts.md"
+        self.replace(acts, "- Aino's brother's debt", "+ Aino's brother's debt")
+        text = self.scenes.read_text(encoding="utf-8")
+        self.assertIn("open_thread", text)
+        self.scenes.write_text(text.replace("open_thread", "nonlinear"), encoding="utf-8")
+        code, out, err = run(self.book)
+        self.assertNotIn("open_thread", checks(out), out["findings"])
+
     def test_target_length_forms(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location("validator", SCRIPT)
@@ -501,6 +525,7 @@ class MiniYaml(unittest.TestCase):
         ("a: x\u00a0 # c\n", {"a": "x\u00a0"}), ("waivers\u00a0: 1\n", {"waivers\u00a0": 1}),
         ("a:\n\u3000b: 1\n", {"a": None, "\u3000b": 1}), ("a: |\n  \u00a0x\n", {"a": "\u00a0x\n"}),
         ("a: >\n  one\n\n  two\n  three\n", {"a": "one\ntwo three\n"}),
+        ("a: ._5\n", {"a": "._5"}), ("a: \"=\"\n", {"a": "="}), ("a: x=y\n", {"a": "x=y"}),
     ]
 
     # The fallback refuses these; PyYAML reads them, so they are not silent disagreements.
@@ -514,7 +539,7 @@ class MiniYaml(unittest.TestCase):
                    "w: {a: 1, a: 2}\n", "book: {waivers: {x: y}, waivers: {}}\n", "x: " + "[" * 70 + "]" * 70 + "\n",
                    "a: [x, , y]\n", "a: [x] y\n", "title: 'Don't Look Back'\n", "'Don't': x\n",
                    "b:\n  <<: {t: X}\n", "a: [who?]\n", "a: {k?: v}\n", "a: [a?b]\n",
-                   "a: x\x0cy\n", "a: 1\x1cb: 2\n", "a: x\x0b\n"]
+                   "a: x\x0cy\n", "a: 1\x1cb: 2\n", "a: x\x0b\n", "a: =\n", "a: <<\n", "a: [=]\n"]
     if hasattr(sys, "get_int_max_str_digits"):  # Python 3.11+ caps int() at 4,300 digits; 3.9 reads it
         BOTH_REFUSE.append("n: " + "9" * 5000 + "\n")
 
