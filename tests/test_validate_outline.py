@@ -291,6 +291,28 @@ class ValidateOutline(unittest.TestCase):
                 self.assertNotIn("names", checks(out))
                 (self.book / f"bible/characters/{slug}.md").unlink()
 
+    def test_names_keep_marks_outside_latin_greek_cyrillic(self):
+        v = RulesStayInSync.load_validator()
+        self.assertNotEqual(v.norm("राम"), v.norm("रीमा"))
+        self.assertNotEqual(v.norm("だ"), v.norm("た"))
+        self.assertNotEqual(v.norm("ガン"), v.norm("カン"))
+        self.assertEqual(v.norm("Häkkinen"), "hakkinen")
+        self.assertEqual(v.norm("Ηλέκτρα"), v.norm("Ηλεκτρα"))
+        (self.book / "bible/characters/ram.md").write_text("# राम\n", encoding="utf-8")
+        self.replace(self.scenes, "characters: [Häkkinen, Tuomas Lehto]", "characters: [Häkkinen, रीमा]")
+        self.assert_error("entities")
+
+    def test_status_of_the_wrong_type_is_a_field_error(self):
+        self.replace(self.scenes, "status: planned", "status: [planned]")
+        self.assert_error("fields")
+
+    def test_unused_waiver_is_reported(self):
+        self.replace(self.scenes, "  waivers: {}", '  waivers: {open_threads: "typo", compromise: "fine"}')
+        code, out, _ = run(self.book)
+        self.assertEqual(code, 0)
+        msgs = [f["message"] for f in out["findings"] if f["check"] == "waivers"]
+        self.assertEqual(len(msgs), 2)  # a typo'd id, and a check that passes anyway
+
     def test_late_compromise_ok_when_an_earlier_one_exists(self):
         self.replace(self.scenes, "flags: [open_thread]", "flags: [open_thread, compromise]")
         code, out, _ = run(self.book)
@@ -332,11 +354,16 @@ class ValidateOutline(unittest.TestCase):
 class RulesStayInSync(unittest.TestCase):
     """The prose fallback and the templates restate the validator's vocabulary; keep them aligned."""
 
-    def setUp(self):
+    @staticmethod
+    def load_validator():
         import importlib.util
         spec = importlib.util.spec_from_file_location("validate_outline", SCRIPT)
-        self.v = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.v)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def setUp(self):
+        self.v = self.load_validator()
 
     def test_every_check_id_is_documented(self):
         code = SCRIPT.read_text(encoding="utf-8")
@@ -393,11 +420,15 @@ class MiniYaml(unittest.TestCase):
         ("a: |\n  # heading\n  text\n", {"a": "# heading\ntext\n"}),
         ('s: "say \\"hi\\" #1"  # c\n', {"s": 'say "hi" #1'}),
         ("a: >-\n  x\n  y\n", {"a": "x y"}),
+        ('"waivers": {a: 1}\n', {"waivers": {"a": 1}}),
+        ("'it''s': 1\n", {"it's": 1}),
+        ("title: 'a'' # b'' c'\n", {"title": "a' # b' c"}),
+        ("tags: ['a'', b', c]\n", {"tags": ["a', b", "c"]}),
     ]
 
     # The fallback refuses these; PyYAML reads them, so they are not silent disagreements.
     FALLBACK_REFUSES = ['s: "\\x41"\n', 's: "\\e"\n', "- - a\n", "d: 2026-10-29\n", "a: |+\n  x\n",
-                        "a: >\n  x\n    more\n"]
+                        "a: >\n  x\n    more\n", '"waiv\\x65rs": 1\n', "1: x\n", "yes: x\n"]
 
     # Both paths must refuse these with YAMLError (never another exception: the guard depends on it).
     BOTH_REFUSE = ["a: &x [1]\nb: *x\n", "x: 0x_\n", "x: 0b_\n", "d: 2026-02-30\n", "? [a]\n: b\n",
@@ -424,6 +455,8 @@ class MiniYaml(unittest.TestCase):
                     ns_yaml._Parser(text).parse()
 
     def test_load_refuses_with_yamlerror_only(self):
+        if ns_yaml._pyyaml is None:
+            self.skipTest("PyYAML not installed: only the fallback arm can run (see test_fallback_refuses_all)")
         for forced in (False, True):
             for text in self.BOTH_REFUSE:
                 with self.subTest(fallback=forced, text=text[:30]):
@@ -434,6 +467,28 @@ class MiniYaml(unittest.TestCase):
                             ns_yaml.load(text)
                     finally:
                         ns_yaml._FORCE_FALLBACK = old
+
+    def test_byte_order_mark_is_skipped_like_pyyaml(self):
+        for forced in (True, False):
+            with self.subTest(fallback=forced):
+                old = ns_yaml._FORCE_FALLBACK
+                ns_yaml._FORCE_FALLBACK = forced
+                try:
+                    self.assertEqual(ns_yaml.load("\ufeffbook: 1\n"), {"book": 1})
+                    self.assertEqual(ns_yaml.load("\ufeff# c\nbook: 1\n"), {"book": 1})
+                finally:
+                    ns_yaml._FORCE_FALLBACK = old
+
+    def test_fallback_refuses_all(self):
+        old = ns_yaml._FORCE_FALLBACK
+        ns_yaml._FORCE_FALLBACK = True
+        try:
+            for text in self.BOTH_REFUSE:
+                with self.subTest(text=text[:30]):
+                    with self.assertRaises(ns_yaml.YAMLError):
+                        ns_yaml.load(text)
+        finally:
+            ns_yaml._FORCE_FALLBACK = old
 
     def test_strict_loader(self):
         if ns_yaml._pyyaml is None:

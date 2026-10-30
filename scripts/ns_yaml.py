@@ -26,7 +26,8 @@ except ImportError:  # pragma: no cover - depends on the machine
 
 MAX_DEPTH = 64
 _FORCE_FALLBACK = os.environ.get("NOVELSMITH_YAML") == "fallback"
-_CRASHES = (ValueError, TypeError, OverflowError, RecursionError, MemoryError)
+_CRASHES = (ValueError, TypeError, OverflowError, RecursionError, MemoryError, KeyError, IndexError,
+            AttributeError)
 
 
 class YAMLError(ValueError):
@@ -84,6 +85,7 @@ def _describe(exc):
 
 
 def load(text):
+    text = text[1:] if text.startswith("\ufeff") else text  # a byte-order mark, which PyYAML skips too
     if _pyyaml is not None and not _FORCE_FALLBACK:
         try:
             return _pyyaml.load(text, Loader=_StrictLoader)
@@ -160,77 +162,90 @@ def _opens_quote(prev):
     return prev is None or prev in ":-[{,?"
 
 
+def _quote_end(s, i):
+    """Index of the quote closing the quoted scalar that opens at s[i], or -1.
+
+    Double quotes skip backslash escapes; single quotes treat '' as an escaped quote.
+    """
+    q, j = s[i], i + 1
+    while j < len(s):
+        ch = s[j]
+        if q == '"' and ch == "\\":
+            j += 2
+            continue
+        if ch == q:
+            if q == "'" and s[j + 1:j + 2] == "'":
+                j += 2
+                continue
+            return j
+        j += 1
+    return -1
+
+
 def _strip_comment(s):
     """Drop a trailing # comment that is outside quotes."""
-    quote, prev, escaped = None, None, False
-    for i, ch in enumerate(s):
-        if quote:
-            if escaped:
-                escaped = False
-            elif ch == "\\" and quote == '"':
-                escaped = True
-            elif ch == quote:
-                quote = None
-        elif ch in "\"'" and _opens_quote(prev):
-            quote = ch
-        elif ch == "#" and (i == 0 or s[i - 1] in " \t"):
+    i, prev = 0, None
+    while i < len(s):
+        ch = s[i]
+        if ch in "\"'" and _opens_quote(prev):
+            end = _quote_end(s, i)
+            if end == -1:
+                return s.rstrip()
+            i, prev = end + 1, ch
+            continue
+        if ch == "#" and (i == 0 or s[i - 1] in " \t"):
             return s[:i].rstrip()
         if ch not in " \t":
             prev = ch
+        i += 1
     return s.rstrip()
 
 
 def _split_top(s, sep):
     """Split on sep outside quotes and brackets."""
-    parts, depth, quote, cur, prev, escaped = [], 0, None, [], None, False
-    for ch in s:
-        if quote:
-            cur.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == "\\" and quote == '"':
-                escaped = True
-            elif ch == quote:
-                quote = None
-            prev = ch
+    parts, depth, start, i, prev = [], 0, 0, 0, None
+    while i < len(s):
+        ch = s[i]
+        if ch in "\"'" and _opens_quote(prev):
+            end = _quote_end(s, i)
+            i, prev = (len(s) if end == -1 else end + 1), ch
             continue
-        if ch not in " \t":
-            was, prev = prev, ch
-        else:
-            cur.append(ch)
-            continue
-        if ch in "\"'" and _opens_quote(was):
-            quote = ch
-        elif ch in "[{":
+        if ch in "[{":
             depth += 1
         elif ch in "]}":
             depth -= 1
         elif ch == sep and depth == 0:
-            parts.append("".join(cur))
-            cur = []
+            parts.append(s[start:i])
+            start, prev = i + 1, ch
+            i += 1
             continue
-        cur.append(ch)
-    parts.append("".join(cur))
+        if ch not in " \t":
+            prev = ch
+        i += 1
+    parts.append(s[start:])
     return parts
 
 
 def _key_split(s):
-    """Return (key, rest) if s is 'key: value' or 'key:', else None."""
-    quote = None
-    for i, ch in enumerate(s):
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            if i == 0:
-                quote = ch
-        elif ch in "[{" and i == 0:
+    """Return (key, rest) if s is 'key: value' or 'key:', else None. Keys read like PyYAML's or raise."""
+    i = 0
+    if s[:1] in "\"'":
+        i = _quote_end(s, 0)
+        if i == -1:
             return None
-        elif ch == ":" and (i + 1 == len(s) or s[i + 1] == " "):
-            key = s[:i].strip()
-            if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
-                key = key[1:-1]
+        i += 1
+    elif s[:1] in "[{":
+        return None
+    while i < len(s):
+        if s[i] == ":" and (i + 1 == len(s) or s[i + 1] == " "):
+            text = s[:i].strip()
+            key = _scalar(text, None) if text[:1] in "\"'" else text
+            if text[:1] not in "\"'" and _scalar(text, None) != text:
+                raise YAMLError(f"quote the key {text!r}; PyYAML would not read it as text")
+            if not isinstance(key, str):
+                raise YAMLError(f"keys must be text, got {text!r}")
             return key, s[i + 1:].strip()
+        i += 1
     return None
 
 

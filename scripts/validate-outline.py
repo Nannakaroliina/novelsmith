@@ -73,10 +73,17 @@ CLOCK_RE = re.compile(r"(\d{1,2}):(\d{2})")
 
 
 def norm(s):
-    """Accent-free, case-free spelling key; letters of every script are kept (Иван stays иван)."""
-    s = unicodedata.normalize("NFKD", str(s))
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"[\W_]+", "-", s.casefold()).strip("-")
+    """Case-free spelling key. Accents are dropped from Latin, Greek and Cyrillic letters only (Häkkinen =
+    hakkinen); marks that make a different letter in other scripts are kept (राम ≠ रीमा, だ ≠ た)."""
+    kept = []
+    for ch in unicodedata.normalize("NFKD", str(s)):
+        if unicodedata.combining(ch) and kept and unicodedata.name(kept[-1], "").split()[:1] and \
+                unicodedata.name(kept[-1], "").split()[0] in LOOKALIKE_SCRIPTS:
+            continue
+        kept.append(ch)
+    text = unicodedata.normalize("NFC", "".join(kept)).casefold()
+    key = "".join(ch if ch.isalnum() or unicodedata.category(ch).startswith("M") else "-" for ch in text)
+    return re.sub(r"-+", "-", key).strip("-")
 
 
 def as_list(v):
@@ -126,11 +133,13 @@ class Report:
     def __init__(self, waivers):
         self.items = []
         self.waivers = {tag(k): v for k, v in (waivers or {}).items()}
+        self.used = set()
 
     def add(self, level, check, message, where="", fix=""):
         check = tag(check)
         if level == "error" and check in self.waivers:
             level = "waived"
+            self.used.add(check)
             message += f" [waived by author: {self.waivers[check]}]"
         self.items.append({"level": level, "check": check, "where": where, "message": message, "fix": fix})
 
@@ -294,7 +303,7 @@ def validate(book):
         s["_wt"] = wt
         total += wt
         status = s.get("status", "planned")
-        if status not in STATUSES:
+        if not isinstance(status, str) or status not in STATUSES:
             rep.error("fields", f"status {status!r} is not one of {', '.join(sorted(STATUSES))}", sid)
         flags = {tag(f) for f in as_list(s.get("flags"))}
         s["_flags"] = flags
@@ -520,6 +529,11 @@ def validate(book):
             for t in NORDIC_SUBPLOTS:
                 if t not in tags:
                     rep.warn("nordic", f"no scene with subplot: {t} (mystery-nordic-finnish.md §4)", "subplot")
+
+    for key in sorted(set(rep.waivers) - rep.used):
+        rep.warn("waivers", f"the waiver {key!r} matched no error (not a check id, a warning-only check, "
+                            f"or the check now passes)", "book.waivers",
+                 "Remove it, or correct the id; the ids are listed in skills/outline/references/validator-rules.md.")
 
     stats = {"scenes": len(scenes), "chapters": len(chapters), "words": total,
              "structure": structure, "mystery": is_mystery, "nordic": is_nordic}

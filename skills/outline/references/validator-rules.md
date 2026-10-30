@@ -41,6 +41,7 @@ The file cannot be checked at all (exit 2) when scenes.yaml is missing, is not U
 - `chapter_shape` (four or more chapters): chapter word totals vary too little (standard deviation under 20% of the mean); every chapter has the same number of scenes.
 - `mystery`: no `inciting_crime`, or it ends after 20%; no `false_solution`; more than two scenes after `exposure`. `clues`: a planted clue never paid off.
 - `nordic` (mystery whose genre or variant names Nordic, Finnish or Scandinavian): no scene with subplot `social`, `criminal`, `institution` or `season`.
+- `waivers`: a waiver in `book.waivers` that matched no error (unknown id, a warning-only check, or the check now passes).
 - `vocabulary`: a beat or flag outside the vocabulary in `templates/scenes.yaml`. `value_shift`: does not read "from X to Y". `structure`: a non-arc model, so beat checks were skipped.
 
 ## Report
