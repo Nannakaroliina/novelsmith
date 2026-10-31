@@ -1121,16 +1121,24 @@ class GuardCanon(unittest.TestCase):
         self._shared_bible()
         self._folders(self.book / "research")
         guard = guard_module()
-        self.assertIsInstance(guard.through_link((self.project / "src/app.py",), self.book), guard.CannotTell)
+        rel = guard.through_link((self.project / "src/app.py",), self.book)
+        self.assertIsInstance(rel, guard.CannotTell)
+        self.assertIn("over 5,000 folders and links", rel.why)
         decision, why = self.hook("Write", "src/app.py", agent="general-purpose", reason=True, content="x")
         self.assertEqual(decision, "deny")
         self.assertIn("over 5,000 folders and links", why)
-        self.assertNotIn("Write inside book/ by its own path", why)
+        self.assertIn("the fix: remove links to large folders", why)
         decision, why = self.hook("Write", "src/app.py", reason=True, content="x")
         self.assertEqual(decision, "ask")
         self.assertIn("move large folders out of book/", why)
-        self.assertIsInstance(guard.through_link((self.project / "src/app.py",), self.book, budget=-1),
-                              guard.CannotTell)
+
+    def test_a_symlink_walk_over_its_time_budget_cannot_tell(self):
+        self._shared_bible()
+        guard = guard_module()
+        self.assertEqual(guard.through_link((self.project / "src/app.py",), self.book), ())
+        rel = guard.through_link((self.project / "src/app.py",), self.book, budget=-1)
+        self.assertIsInstance(rel, guard.CannotTell)
+        self.assertIn("took over", rel.why)
 
     def test_a_symlink_walk_that_cannot_read_a_folder_cannot_tell(self):
         series = self._shared_bible()
@@ -1146,9 +1154,41 @@ class GuardCanon(unittest.TestCase):
                                       reason=True, content="x")
             self.assertEqual(decision, "deny")
             self.assertIn(f"cannot read {locked}", why)
+            self.assertIn("move it out of book/", why)
             self.assertEqual(self.hook("Write", str(series / "harbour.md"), raw=True, content="x"), "ask")
         finally:
             locked.chmod(0o755)
+
+    def test_an_unreadable_folder_behind_a_link_names_the_link(self):
+        series = self._shared_bible()
+        private = series / "drafts"
+        private.mkdir()
+        private.chmod(0)
+        try:
+            if os.access(private, os.R_OK):
+                self.skipTest("running with permissions that read any folder")
+            decision, why = self.hook("Write", "src/app.py", reason=True, content="x")
+            self.assertEqual(decision, "ask")
+            self.assertIn(f"cannot read {private.resolve()}, reached through the link book/bible/world/shared", why)
+            self.assertIn("remove the link book/bible/world/shared", why)
+            self.assertNotIn("move it out of book/", why)
+        finally:
+            private.chmod(0o755)
+
+    def test_an_unreadable_dot_folder_holds_no_links(self):
+        series = self._shared_bible()
+        trash = series / ".Trashes"
+        trash.mkdir()
+        trash.chmod(0)
+        try:
+            if os.access(trash, os.R_OK):
+                self.skipTest("running with permissions that read any folder")
+            self.assertIsNone(self.hook("Write", "src/app.py", agent="general-purpose", content="x"))
+            self.assertIsNone(self.hook("Write", "src/app.py", content="x"))
+            self.assertEqual(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
+                                       content="# Harbour\n- The harbour never freezes.\n"), "deny")
+        finally:
+            trash.chmod(0o755)
 
     def test_links_in_dot_folders_are_found_and_their_files_do_not_count(self):
         series = self._shared_bible()
@@ -1158,7 +1198,8 @@ class GuardCanon(unittest.TestCase):
         for n in range(5_100):
             (vault / f"o{n:04}").write_text("x", encoding="utf-8")
         (vault / "series").symlink_to(series)
-        self.assertEqual(guard_module().through_link((series / "harbour.md",), self.book), ".vault/series/harbour.md")
+        self.assertEqual(guard_module().through_link((series / "harbour.md",), self.book),
+                         (".vault/series/harbour.md",))
         self.assertIsNone(self.hook("Write", "src/app.py", agent="general-purpose", content="x"))
 
     def test_a_link_target_spelled_through_a_firmlink_is_still_the_book(self):
@@ -1166,9 +1207,86 @@ class GuardCanon(unittest.TestCase):
         spelled = Path("/System/Volumes/Data" + str(series / "harbour.md"))
         if not spelled.exists():
             self.skipTest("no /System/Volumes/Data firmlink for this folder")
-        self.assertEqual(guard_module().through_link((spelled,), self.book), "bible/world/shared/harbour.md")
+        self.assertEqual(guard_module().through_link((spelled,), self.book), ("bible/world/shared/harbour.md",))
         self.assertEqual(self.hook("Write", str(spelled), agent="general-purpose", raw=True,
                                    content="# Harbour\n- The harbour never freezes.\n"), "deny")
+
+    def test_folders_with_no_identity_are_still_walked(self):
+        # Windows: os.DirEntry.stat reports st_dev and st_ino as 0, and FAT drives give no identity at all
+        series = self._shared_bible()
+        guard = guard_module()
+
+        class Zeroed:
+            def __init__(self, entry):
+                self._entry = entry
+
+            def __getattr__(self, name):
+                return getattr(self._entry, name)
+
+            def stat(self, follow_symlinks=True):
+                st = self._entry.stat(follow_symlinks=follow_symlinks)
+                return os.stat_result((st.st_mode, 0, 0) + tuple(st)[3:])
+
+        class Listing:
+            def __init__(self, folder):
+                self._entries = [Zeroed(e) for e in real_scandir(folder)]
+
+            def __enter__(self):
+                return iter(self._entries)
+
+            def __exit__(self, *exc):
+                return False
+
+        real_scandir = os.scandir
+        guard.os.scandir = Listing
+        guard.identity = lambda path: None
+        try:
+            self.assertEqual(guard.through_link((series / "harbour.md",), self.book),
+                             ("bible/world/shared/harbour.md",))
+        finally:
+            guard.os.scandir = real_scandir
+
+    def test_a_shortcut_inside_the_book_does_not_rename_canon(self):
+        series = self._shared_bible()
+        (self.book / "world").symlink_to(self.book / "bible/world")
+        self.assertEqual(guard_module().through_link((series / "harbour.md",), self.book),
+                         ("bible/world/shared/harbour.md",))
+        edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+        self.assertEqual(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
+                                   content=edit), "deny")
+        self.assertIsNone(self.hook("Write", str(series / "harbour.md"), agent="novelsmith:worldbuilder", raw=True,
+                                    content=edit))
+
+    def test_every_path_that_reaches_a_file_is_checked(self):
+        series = self._shared_bible()
+        (self.book / "archive").symlink_to(self.project)
+        self.assertEqual(guard_module().through_link((series / "harbour.md",), self.book),
+                         ("archive/series-bible/harbour.md", "bible/world/shared/harbour.md"))
+        edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+        for spelled in (str(series / "harbour.md"), str(self.book / "archive/series-bible/harbour.md")):
+            decision, why = self.hook("Write", spelled, agent="general-purpose", raw=True, reason=True, content=edit)
+            self.assertEqual(decision, "deny")
+            self.assertIn("book/bible/world/shared/harbour.md is canon", why)
+            decision, why = self.hook("Write", spelled, agent="novelsmith:worldbuilder", raw=True, reason=True,
+                                      content=edit)
+            self.assertEqual(decision, "deny")
+            self.assertIn("book/archive/series-bible/harbour.md belongs to another stage", why)
+        (self.book / "archive").rename(self.book / "zz-archive")  # now the path in scope comes first
+        decision, why = self.hook("Write", str(series / "harbour.md"), agent="novelsmith:worldbuilder", raw=True,
+                                  reason=True, content=edit)
+        self.assertEqual(decision, "deny")
+        self.assertIn("book/zz-archive/series-bible/harbour.md belongs to another stage", why)
+
+    def test_dangling_and_looping_links_are_passed_over(self):
+        missing = self.project / "series-bible"
+        (self.book / "bible/world").mkdir(parents=True, exist_ok=True)
+        (self.book / "bible/world/shared").symlink_to(missing)
+        (self.book / "a").symlink_to(self.book / "b")
+        (self.book / "b").symlink_to(self.book / "a")
+        guard = guard_module()
+        self.assertEqual(guard.through_link((missing / "harbour.md",), self.book), ("bible/world/shared/harbour.md",))
+        self.assertEqual(guard.through_link((self.project / "src/app.py",), self.book), ())
+        self.assertIsNone(self.hook("Write", "src/app.py", agent="general-purpose", content="x"))
 
     def test_a_link_inside_a_linked_folder_is_still_the_book(self):
         series = self._shared_bible()
@@ -1177,7 +1295,7 @@ class GuardCanon(unittest.TestCase):
         (store / "aino.md").write_text("# Aino\n## ⚓ Anchored\n- Aino never drinks.\n", encoding="utf-8")
         (series / "people").symlink_to(store)
         self.assertEqual(guard_module().through_link((store / "aino.md",), self.book),
-                         "bible/world/shared/people/aino.md")
+                         ("bible/world/shared/people/aino.md",))
         self.assertEqual(self.hook("Write", str(store / "aino.md"), agent="general-purpose", raw=True,
                                    content="# Aino\n- Aino drinks.\n"), "deny")
         self.assertEqual(self.hook("Write", str(store / "aino.md"), raw=True, content="# Aino\n- Aino drinks.\n"),
@@ -1186,8 +1304,8 @@ class GuardCanon(unittest.TestCase):
     def test_a_link_back_to_the_book_or_its_folder_ends(self):
         (self.book / "again").symlink_to(self.book)
         (self.book / "up").symlink_to(self.project)
-        self.assertEqual(guard_module().through_link((self.project / "src/app.py",), self.book), "up/src/app.py")
-        self.assertIsNone(guard_module().through_link((Path("/nowhere/else.md"),), self.book))
+        self.assertEqual(guard_module().through_link((self.project / "src/app.py",), self.book), ("up/src/app.py",))
+        self.assertEqual(guard_module().through_link((Path("/nowhere/else.md"),), self.book), ())
 
     def test_the_symlink_walk_is_skipped_outside_a_book_project(self):
         series = self._shared_bible()
@@ -1197,6 +1315,7 @@ class GuardCanon(unittest.TestCase):
                                     content="x"))
         self.assertIsNone(self.hook("Write", "src/app.py", agent="general-purpose", content="x"))
         self.assertIsNone(self.hook("Write", "src/app.py", content="x"))
+
 
 class HookCommand(unittest.TestCase):
     """Run the exact command string from hooks/hooks.json through sh."""

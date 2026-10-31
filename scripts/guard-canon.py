@@ -155,17 +155,28 @@ def locate(path, book_root):
 
 
 def target(raw, cwd, book_root):
-    """(resolved path, path inside book/ or None) for a tool's file argument. It is in the book if the path as
-    written (~ expanded, normalised) or the file it resolves to lies in book/, so a folder in the book that is a
-    symlink to elsewhere (a series bible shared between books) is still the book."""
+    """(resolved path, the file's paths inside book/) for a tool's file argument. The paths are a sorted tuple,
+    empty when the file is outside the book, or a CannotTell. It is in the book if the path as written (~ expanded,
+    normalised) or the file it resolves to lies in book/, or a symlink in book/ leads to it (a series bible shared
+    between books). Every path that reaches the file is given, so the strictest rule can apply."""
     written = Path(os.path.normpath(os.path.join(str(cwd), os.path.expanduser(raw))))
     path = written.resolve()
-    rel = locate(path, book_root)
-    if rel is None:
-        rel = book_relative(written, Path(os.path.normpath(str(book_root))))
-    if rel is None and is_book_project(book_root):
-        rel = through_link((path, written), book_root)
-    return path, rel
+    real = locate(path, book_root)
+    rels = {r for r in (real, book_relative(written, Path(os.path.normpath(str(book_root))))) if r is not None}
+    if real is None and is_book_project(book_root):
+        linked = through_link((path, written), book_root)
+        if isinstance(linked, CannotTell):
+            return path, linked
+        rels.update(linked)
+    return path, tuple(sorted(rels))
+
+
+def strictest(rels):
+    """Of a file's book paths, the one the strictest rules see: scenes.yaml or premise.md, then canon, then the
+    first."""
+    special = [r for r in rels if r in (SCENES, PREMISE)]
+    canon = [r for r in rels if any(fnmatch.fnmatchcase(r, g) for g in CANON)]
+    return (special or canon or rels)[0]
 
 
 class CannotTell(str):
@@ -192,50 +203,87 @@ def identities(path):
     return ids
 
 
+def identity(path):
+    """(st_dev, st_ino) of `path` itself (a link is not followed), or None when it is gone or the file system gives
+    no identity. os.lstat, since os.DirEntry.stat on Windows always reports 0 for both."""
+    try:
+        st = os.lstat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def unreadable(path, via, error):
+    """None when a folder that could not be listed can be passed over (it is gone, or a dot-folder such as a disk's
+    .Spotlight-V100 or ~/.Trash, taken to hold no links), else the CannotTell naming it and the link it is behind."""
+    if isinstance(error, (FileNotFoundError, NotADirectoryError)) or Path(path).name.startswith("."):
+        return None
+    if via:
+        return CannotTell(f"it cannot read {path}, reached through the link {via}",
+                          f"remove the link {via}, or make {path} readable")
+    return CannotTell(f"it cannot read {path}", f"make {path} readable, or move it out of book/")
+
+
 def through_link(paths, book_root, limit=5000, budget=3.0):
-    """The book path of a file (`paths`: its spellings) when it lies inside what a symlink in book/ points to (a
-    shared series bible written to by its own location), a CannotTell when the walk could not finish, else None.
-    A link's target is matched by folder identity as well as by text, and links inside a linked folder are
-    followed too. Only folders and links count toward `limit`, so plain files never make the walk give up."""
+    """Every book path of a file (`paths`: its spellings) that reaches it through a symlink in book/ (a shared
+    series bible written to by its own location), as a sorted tuple, empty when there is none, or a CannotTell when
+    the walk could not finish. A link's target is matched by identity as well as by text. Links inside a linked
+    folder are followed too, but only after every real folder of book/, so a folder in the book is named by its own
+    path. Only folders and links count toward `limit`, so plain files never make the walk give up."""
     root = Path(os.path.normpath(str(book_root)))
     texts = {fold(p.as_posix()) for p in paths}
     ids = {}
     for p in paths:
         for key, inner in identities(p).items():
             ids.setdefault(key, inner)
-    try:
-        st = root.stat()
-    except OSError:
-        return None
-    visited, counted, stack, start = {(st.st_dev, st.st_ino)}, 0, [("", root)], time.monotonic()
-    while stack:
-        rel_dir, folder = stack.pop()
+    if not root.is_dir():
+        return ()
+    visited = {identity(root)} - {None}
+    found, counted, start = set(), 0, time.monotonic()
+    real_dirs, linked = [("", "book", root, None)], []
+    while real_dirs or linked:
+        if real_dirs:
+            rel_dir, shown_dir, folder, via = real_dirs.pop()
+        else:
+            rel_dir, shown_dir, folder, via, key = linked.pop()
+            if key in visited:
+                continue  # a folder already walked by its own path
+            visited.add(key)
+        where = f" (in the folder the link {via} leads to)" if via else ""
         if time.monotonic() - start > budget:
-            return CannotTell(f"looking through book/ and the folders it links to took over {budget:g} s",
-                              "move large folders out of book/, or remove links to large or slow folders")
+            return CannotTell(f"looking through book/ and the folders it links to took over {budget:g} s{where}",
+                              "if this keeps happening, remove links to large or slow (cloud or external) folders, "
+                              "or move large folders out of book/")
         try:
-            with os.scandir(folder) as found:
-                entries = list(found)
-        except OSError:
-            return CannotTell(f"it cannot read {folder}", f"make {folder} readable, or move it out of book/")
+            with os.scandir(folder) as listing:
+                entries = list(listing)
+        except OSError as error:
+            problem = unreadable(folder, via, error)
+            if problem is None:
+                continue
+            return problem
         for entry in entries:
             rel = f"{rel_dir}/{fold(entry.name)}" if rel_dir else fold(entry.name)
+            shown = f"{shown_dir}/{entry.name}"
             try:
                 is_link = entry.is_symlink()
                 is_dir = not is_link and entry.is_dir(follow_symlinks=False)
-                st = entry.stat(follow_symlinks=False) if is_dir else None
-            except OSError:
-                return CannotTell(f"it cannot read {entry.path}", f"make {entry.path} readable, or move it out of book/")
+            except OSError as error:
+                problem = unreadable(entry.path, via, error)
+                if problem is None:
+                    continue
+                return problem
             if not (is_link or is_dir):
                 continue
             counted += 1
             if counted > limit:
-                return CannotTell(f"book/ and the folders it links to hold over {limit:,} folders and links",
-                                  "move large folders out of book/, or remove links to large folders")
+                return CannotTell(f"book/ and the folders it links to hold over {limit:,} folders and links{where}",
+                                  "remove links to large folders, or move large folders out of book/")
             if is_dir:
-                if (st.st_dev, st.st_ino) not in visited:
-                    visited.add((st.st_dev, st.st_ino))
-                    stack.append((rel, Path(entry.path)))
+                key = identity(entry.path)
+                if key is None or key not in visited:  # with no identity it is walked: real folders form a tree
+                    visited.add(key)
+                    real_dirs.append((rel, shown, Path(entry.path), via))
                 continue
             try:
                 real_path = Path(entry.path).resolve()
@@ -245,18 +293,17 @@ def through_link(paths, book_root, limit=5000, budget=3.0):
             for text in texts:
                 if text == real or text.startswith(real + "/"):
                     inner = text[len(real) + 1:]
-                    return f"{rel}/{inner}" if inner else rel
+                    found.add(f"{rel}/{inner}" if inner else rel)
             try:
-                st = real_path.stat()
-            except OSError:
+                st = os.stat(real_path)
+            except (OSError, ValueError):
                 continue  # dangling: only its text can match
-            key = (st.st_dev, st.st_ino)
+            key = (st.st_dev, st.st_ino) if st.st_ino else ("path", real)
             if key in ids:
-                return f"{rel}/{ids[key]}" if ids[key] else rel
+                found.add(f"{rel}/{ids[key]}" if ids[key] else rel)
             if stat.S_ISDIR(st.st_mode) and key not in visited:
-                visited.add(key)
-                stack.append((rel, real_path))
-    return None
+                linked.append((rel, shown, real_path, shown, key))
+    return tuple(sorted(found))
 
 
 def is_book_project(book_root):
@@ -596,20 +643,22 @@ def main(data):
     raw = inp.get("notebook_path" if tool == NOTEBOOK_TOOL else "file_path")
     if not raw:
         return 0
-    path, rel = target(raw, cwd, book_root)
-    if isinstance(rel, CannotTell):
+    path, rels = target(raw, cwd, book_root)
+    if isinstance(rels, CannotTell):
         if agent:
             return decide("deny", f"novelsmith: the canon guard cannot tell whether {raw} is a book file reached "
-                                  f"through a link in book/ ({rel.why}), so subagents' writes outside book/ are "
-                                  f"denied in this project until the author fixes that. Report it to the author; if "
-                                  f"the file belongs to the book, write it by its path inside book/.")
+                                  f"through a link in book/ ({rels.why}), so subagents' writes outside book/ are "
+                                  f"denied in this project until the author fixes that. Report it to the author, with "
+                                  f"the fix: {rels.fix}. If the file belongs to the book, write it by its path inside "
+                                  f"book/.")
         return decide("ask", f"novelsmith: the canon guard cannot tell whether {raw} is a book file reached through "
-                             f"a link in book/ ({rel.why}). Allow it only if you asked for this change. To end these "
-                             f"prompts, {rel.fix}.")
-    if rel is None:
+                             f"a link in book/ ({rels.why}). Allow it only if you asked for this change. To end these "
+                             f"prompts, {rels.fix}.")
+    if not rels:
         if ours:
             return decide("deny", f"novelsmith: {short} writes only under book/; {raw} is outside the book.")
         return 0
+    rel = strictest(rels)
     if not ours and not is_book_project(book_root):
         return 0  # another tool's book/ folder
     if tool == NOTEBOOK_TOOL:
@@ -624,9 +673,11 @@ def main(data):
         if ours and scopes is None:
             return decide("deny", f"novelsmith: agent {agent} has no write scope registered in guard-canon.py "
                                   f"AGENT_SCOPES, so it may not write under book/.")
-        if scopes is not None and not any(fnmatch.fnmatchcase(rel, g) for g in scopes):
+        elsewhere = [r for r in rels if not any(fnmatch.fnmatchcase(r, g) for g in scopes or ())]
+        if scopes is not None and elsewhere:
             return decide("deny", f"novelsmith: {short} may write only {', '.join('book/' + g for g in scopes)}; "
-                                  f"book/{rel} belongs to another stage. Write a proposal in book/proposals/ instead.")
+                                  f"book/{elsewhere[0]} belongs to another stage. Write a proposal in book/proposals/ "
+                                  f"instead.")
         if scopes is None and any(fnmatch.fnmatchcase(rel, g) for g in CANON):
             return decide("deny", f"novelsmith: book/{rel} is canon. Only the bible stage agents (or the author in the "
                                   f"main conversation) edit book/bible/. Propose the change in book/proposals/.")
@@ -729,7 +780,7 @@ def writes_book(payload):
     try:
         cwd = Path(payload.get("cwd") or os.getcwd())
         project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
-        return target(raw, cwd, project / "book")[1] is not None  # CannotTell counts as the book
+        return bool(target(raw, cwd, project / "book")[1])  # a CannotTell counts as the book
     except Exception:  # cannot tell: treat it as the book's
         return True
 
