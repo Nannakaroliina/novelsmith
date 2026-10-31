@@ -29,6 +29,12 @@ def normalize(text):
     leading byte-order mark is dropped (as the validator's utf-8-sig reading and editors do), so the guard and the
     validator agree on what the first line says."""
     text = text[1:] if text.startswith("\ufeff") else text
+    return normalize_lines(text)
+
+
+def normalize_lines(text):
+    """Line endings only, for pieces of a file (an Edit's old_string and new_string), where a leading U+FEFF is
+    text the tool would match, not a byte-order mark."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 

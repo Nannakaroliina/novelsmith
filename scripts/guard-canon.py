@@ -161,34 +161,49 @@ def target(raw, cwd, book_root):
     rel = locate(path, book_root)
     if rel is None:
         rel = book_relative(written, Path(os.path.normpath(str(book_root))))
-    if rel is None:
-        rel = through_link(path, book_root)
+    if rel is None and is_book_project(book_root):
+        rel = through_link({fold(path.as_posix()), fold(written.as_posix())}, book_root)
     return path, rel
 
 
-def through_link(path, book_root, limit=5000):
-    """The book path of `path` when it lies inside what a symlink in book/ points to (a shared series bible written
-    to by its own location), or None. Walks book/ without following links, at most `limit` entries."""
+UNKNOWN = "<cannot tell>"  # through_link's answer when it could not look everywhere
+
+
+def through_link(wanted, book_root, limit=5000):
+    """The book path of a file (its spellings in `wanted`, casefolded) when it lies inside what a symlink in book/
+    points to (a shared series bible written to by its own location), UNKNOWN when the walk could not finish (more
+    than `limit` entries, or a folder it cannot list), else None. Links inside a linked folder are followed too;
+    dot-folders (.git, .obsidian) are not searched."""
     root = Path(os.path.normpath(str(book_root)))
-    if not root.is_dir():
-        return None
-    target_text, seen = fold(path.as_posix()), 0
-    for top, dirs, files in os.walk(root):
-        for name in dirs + files:
-            seen += 1
-            if seen > limit:
-                return None
-            link = Path(top) / name
-            if not link.is_symlink():
-                continue
-            try:
-                real = fold(link.resolve().as_posix()).rstrip("/")
-            except (OSError, RuntimeError):
-                continue
-            if target_text == real or target_text.startswith(real + "/"):
-                inner = target_text[len(real) + 1:]
-                rel = book_relative(link, root)
-                return f"{rel}/{inner}" if inner else rel
+    queue, visited, seen = [("", root)], set(), 0
+    while queue:
+        prefix, folder = queue.pop()
+        failed = []
+        for top, dirs, files in os.walk(folder, onerror=failed.append):
+            for name in dirs + files:
+                seen += 1
+                if seen > limit:
+                    return UNKNOWN
+                link = Path(top) / name
+                if not link.is_symlink():
+                    continue
+                try:
+                    real_path = link.resolve()
+                except (OSError, RuntimeError):
+                    continue
+                real = fold(real_path.as_posix()).rstrip("/")
+                inside = book_relative(link, folder)
+                rel = f"{prefix}/{inside}" if prefix else inside
+                for text in wanted:
+                    if text == real or text.startswith(real + "/"):
+                        inner = text[len(real) + 1:]
+                        return f"{rel}/{inner}" if inner else rel
+                if real_path.is_dir() and real not in visited:
+                    visited.add(real)
+                    queue.append((rel, real_path))
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+        if failed:
+            return UNKNOWN
     return None
 
 
@@ -215,10 +230,11 @@ def line_ending_problem(tool, inp, raw_old, yaml=False):
             for x in (e.get("old_string"), e.get("new_string"))]
         if YAML_BREAKS.search(raw_old) or any(isinstance(x, str) and YAML_BREAKS.search(x) for x in written):
             return "the text holds a line break that YAML counts and the guard does not (U+0085, U+2028 or U+2029)"
-    new_texts = [inp.get("content")] if tool == "Write" else [
-        e.get("new_string") for e in ((inp.get("edits") if tool == "MultiEdit" else [inp]) or []) if isinstance(e, dict)]
-    if any(isinstance(x, str) and "\ufeff" in x for x in new_texts):
-        return "the new text holds an invisible byte-order mark (U+FEFF)"
+    edit_texts = [inp.get("content")] if tool == "Write" else [
+        x for e in ((inp.get("edits") if tool == "MultiEdit" else [inp]) or []) if isinstance(e, dict)
+        for x in (e.get("old_string"), e.get("new_string"))]
+    if any(isinstance(x, str) and "\ufeff" in x for x in edit_texts):
+        return "the text holds an invisible U+FEFF character (a byte-order mark or zero-width no-break space)"
     if tool == "Write":
         content = inp.get("content")
         return ("the new text holds a carriage return that is not part of a line break"
@@ -239,7 +255,7 @@ def edits_of(tool, inp):
     if tool == "Write":
         return []
     edits = inp.get("edits") if tool == "MultiEdit" else [inp]
-    return [{k: ns_book.normalize(v) if isinstance(v, str) else v for k, v in e.items()} for e in edits or []]
+    return [{k: ns_book.normalize_lines(v) if isinstance(v, str) else v for k, v in e.items()} for e in edits or []]
 
 
 def apply_edits(old, tool, inp):
@@ -529,6 +545,13 @@ def main(data):
     if not raw:
         return 0
     path, rel = target(raw, cwd, book_root)
+    if rel == UNKNOWN:
+        if agent:
+            return decide("deny", f"novelsmith: the canon guard cannot tell whether {raw} is in the book (book/ is too "
+                                  f"large or has a folder it cannot read, and links to other folders), so it is "
+                                  f"denied for subagents. Write inside book/ by its own path, or report what you need.")
+        return decide("ask", f"novelsmith: the canon guard cannot tell whether {raw} is a book file reached through "
+                             f"a link in book/. Allow it only if you asked for this change.")
     if rel is None:
         if ours:
             return decide("deny", f"novelsmith: {short} writes only under book/; {raw} is outside the book.")
@@ -561,8 +584,10 @@ def main(data):
     new, exact = apply_edits(old, tool, inp)
     endings = line_ending_problem(tool, inp, raw_old, yaml=rel.endswith((".yaml", ".yml")))
     if endings and agent:
+        advice = ("Leave that character out (retype the passage without it), or report it to the author."
+                  if "U+FEFF" in endings else "Use plain line breaks and copy the text exactly.")
         return decide("deny", f"novelsmith: {endings} in book/{rel}, so the canon guard cannot tell which text the "
-                              f"real edit changes. Use plain line breaks and copy the text exactly.")
+                              f"real edit changes. {advice}")
     exact = exact and not endings
     if not exists and not agent:
         return 0  # the author creating a file (novel-start) owns everything in it
@@ -650,7 +675,7 @@ def writes_book(payload):
     try:
         cwd = Path(payload.get("cwd") or os.getcwd())
         project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
-        return target(raw, cwd, project / "book")[1] is not None
+        return target(raw, cwd, project / "book")[1] is not None  # UNKNOWN counts as the book
     except Exception:  # cannot tell: treat it as the book's
         return True
 

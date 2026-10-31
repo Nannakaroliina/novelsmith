@@ -1075,6 +1075,83 @@ class GuardCanon(unittest.TestCase):
         (self.book / "progress.md").unlink()
         self.assertIsNone(self.bash("sed -i s/a/b/ notes.txt", agent="general-purpose"))
 
+    # --- Round 11 ------------------------------------------------------------------------------
+    def test_an_invisible_ufeff_in_an_edit_is_refused(self):
+        a = "novelsmith:story-architect"
+        # only the U+FEFF check catches this: the heading line would stop being a heading
+        unmake = dict(old_string="## ⚓ Anchored", new_string="\ufeff## ⚓ Anchored")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent=a, **unmake), "deny")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", **unmake), "ask")
+        self.assertEqual(self.hook("MultiEdit", "book/bible/premise.md", agent=a, edits=[
+            {"old_string": "## Genre", "new_string": "## Genre"}, unmake]), "deny")
+        # a zero-width no-break space in the middle of a file: an old_string of just that character
+        sheet = self.book / "bible/characters/anna.md"
+        sheet.write_text("# Anna\n## ⚓ Anchored\n- Anna never\ufeff lies.\n", encoding="utf-8")
+        target = dict(old_string="\ufeff", new_string=" lies to everyone; she")
+        self.assertEqual(self.hook("Edit", "book/bible/characters/anna.md", agent="novelsmith:character-designer",
+                                   **target), "deny")
+        self.assertEqual(self.hook("Edit", "book/bible/characters/anna.md", **target), "ask")
+        decision, why = self.hook("Edit", "book/bible/premise.md", agent=a, reason=True, **unmake)
+        self.assertIn("Leave that character out", why)
+
+    def _shared_bible(self):
+        series = self.project / "series-bible"
+        series.mkdir()
+        (series / "harbour.md").write_text("# Harbour\n## ⚓ Anchored\n- The harbour freezes in March.\n",
+                                          encoding="utf-8")
+        (self.book / "bible/world").mkdir(parents=True, exist_ok=True)
+        (self.book / "bible/world/shared").symlink_to(series)
+        return series
+
+    def test_a_symlink_walk_that_cannot_finish_is_not_outside_the_book(self):
+        import shutil
+        series = self._shared_bible()
+        wipe = "# Harbour\n- The harbour never freezes.\n"
+        crowd = [self.book / f"n{n:04}.md" for n in range(5_100)]  # counted before any subfolder is walked
+        for f in crowd:
+            f.write_text("x", encoding="utf-8")
+        self.assertEqual(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
+                                   content=wipe), "deny")
+        self.assertEqual(self.hook("Write", str(series / "harbour.md"), raw=True, content=wipe), "ask")
+        for f in crowd:
+            f.unlink()
+        # a link inside a folder the walk cannot list
+        (self.book / "bible/world/shared").unlink()
+        locked = self.book / "locked"
+        locked.mkdir()
+        (locked / "shared").symlink_to(series)
+        locked.chmod(0)
+        try:
+            if os.access(locked, os.R_OK):
+                self.skipTest("running with permissions that read any folder")
+            self.assertEqual(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
+                                       content=wipe), "deny")
+        finally:
+            locked.chmod(0o755)
+        shutil.rmtree(locked)
+        # a dot-folder full of files does not use up the walk
+        dot = self.book / ".git"
+        dot.mkdir()
+        for n in range(5_100):
+            (dot / f"o{n:04}").write_text("x", encoding="utf-8")
+        self.assertIsNone(self.hook("Write", str(self.project / "src/app.py"), agent="general-purpose", raw=True,
+                                    content="x"))
+
+    def test_a_link_inside_a_linked_folder_is_still_the_book(self):
+        series = self._shared_bible()
+        store = self.project / "character-store"
+        store.mkdir()
+        (store / "aino.md").write_text("# Aino\n## ⚓ Anchored\n- Aino never drinks.\n", encoding="utf-8")
+        (series / "people").symlink_to(store)
+        self.assertEqual(self.hook("Write", str(store / "aino.md"), agent="general-purpose", raw=True,
+                                   content="# Aino\n- Aino drinks.\n"), "deny")
+
+    def test_the_symlink_walk_is_skipped_outside_a_book_project(self):
+        series = self._shared_bible()
+        (self.book / "outline/scenes.yaml").unlink()
+        self.assertIsNone(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
+                                    content="x"))
+
 
 class HookCommand(unittest.TestCase):
     """Run the exact command string from hooks/hooks.json through sh."""
