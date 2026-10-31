@@ -940,14 +940,15 @@ class GuardCanon(unittest.TestCase):
         for agent in ("novelsmith:outliner", "general-purpose"):
             for tool, inp in (("SubagentHandback", {"message": "done"}), ("TaskCreate", {"subject": "x"}),
                               ("TaskUpdate", {"taskId": "1", "status": "completed"}), ("LSP", {"operation": "x"}),
-                              ("StructuredOutput", {"result": "x"}), ("SomeNewTool", {"query": "x"})):
+                              ("StructuredOutput", {"result": "x"})):
                 with self.subTest(agent=agent, tool=tool):
                     self.assertIsNone(self.hook(tool, None, agent=agent, tool_input_override=inp))
-        # an unfamiliar tool that names a file or a command is still denied
-        for inp in ({"filePath": "book/bible/premise.md"}, {"cmd": "rm -rf book"}, {"code": "open('x','w')"}):
-            with self.subTest(inp=inp):
-                self.assertEqual(self.hook("SomeNewTool", None, agent="general-purpose", tool_input_override=inp),
-                                 "deny")
+        # any tool the guard does not know is denied, whatever its arguments are called
+        for tool, inp in (("SomeNewTool", {"query": "x"}), ("SomeNewTool", {"filePath": "book/bible/premise.md"}),
+                          ("CronCreate", {"cron": "*/5 * * * *", "prompt": "rewrite book/bible/premise.md"})):
+            with self.subTest(tool=tool, inp=inp):
+                self.assertEqual(self.hook(tool, None, agent="general-purpose", tool_input_override=inp), "deny")
+                self.assertIsNone(self.hook(tool, None, tool_input_override=inp))  # the author's own
 
     def test_a_main_conversation_run_as_an_agent_is_the_author(self):
         payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Write",
@@ -1014,6 +1015,65 @@ class GuardCanon(unittest.TestCase):
                             g.anchored_values({"scenes": [{"id": "s1", "pov": "Ann goal: ⚓ x"}]}))
         self.assertEqual(g.anchored_values({"scenes": [{"id": "s1", "goal": "⚓ x"}, {"id": "s2"}]}),
                          g.anchored_values({"scenes": [{"id": "s2"}, {"id": "s1", "goal": "⚓ x"}]}))
+
+    # --- Round 10 ------------------------------------------------------------------------------
+    def test_a_byte_order_mark_cannot_slip_a_setting_or_hide_a_heading(self):
+        a = "novelsmith:story-architect"
+        forged = dict(old_string="# Premise", new_string="\ufeff- Base genre: romance\n# Premise")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent=a, **forged), "deny")
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent=a,
+                                   content="\ufeff- Base genre: romance\n" + self.premise_text()), "deny")
+        # a file the author saved with a BOM: its first-line ⚓ heading still protects its body
+        sheet = self.book / "bible/characters/anna.md"
+        sheet.write_bytes("\ufeff# ⚓ Anna Virtanen\n- Anna never lies to Aino.\n".encode("utf-8"))
+        self.assertEqual(self.hook("Edit", "book/bible/characters/anna.md", agent="novelsmith:character-designer",
+                                   old_string="- Anna never lies to Aino.", new_string="- Anna lies to everyone."),
+                         "deny")
+        g = guard_module()
+        text = g.ns_book.normalize("\ufeff- Base genre: romance\n## Genre\n- Base genre: mystery\n")
+        self.assertEqual(g.ns_book.book_settings(text)["genre"], "romance")  # the first line, as the validator reads it
+
+    def test_a_symlinked_book_folder_written_through_its_real_location(self):
+        series = self.project / "series-bible"
+        series.mkdir()
+        (series / "harbour.md").write_text("# Harbour\n## ⚓ Anchored\n- The harbour freezes in March.\n",
+                                          encoding="utf-8")
+        (self.book / "bible/world").mkdir(parents=True, exist_ok=True)
+        (self.book / "bible/world/shared").symlink_to(series)
+        real = str(series / "harbour.md")
+        wipe = "# Harbour\n- The harbour never freezes.\n"
+        self.assertEqual(self.hook("Write", real, agent="general-purpose", raw=True, content=wipe), "deny")
+        self.assertEqual(self.hook("Write", real, raw=True, content=wipe), "ask")
+        self.assertIsNone(self.hook("Write", str(series / "port.md"), agent="novelsmith:worldbuilder", raw=True,
+                                    content="# Port\n"))
+
+    def test_subagent_identity_comes_from_agent_id(self):
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.project)}
+
+        def decide(**fields):
+            payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project), **fields}
+            p = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload), capture_output=True,
+                               text=True, env=env)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"] if p.stdout.strip() else None
+
+        write = dict(tool_name="Write", tool_input={"file_path": str(self.book / "bible/style.md"), "content": "x"})
+        sed = dict(tool_name="Bash", tool_input={"command": "sed -i x book/bible/premise.md"})
+        mcp = dict(tool_name="mcp__fs__write_file", tool_input={"path": "x"})
+        for who in ({"agent_id": "a1"}, {"agent_id": "a1", "agent_type": ""}):
+            with self.subTest(who=who):
+                for call in (write, sed, mcp):
+                    self.assertEqual(decide(**who, **call), "deny")
+        self.assertIsNone(decide(agent_id="", agent_type="general-purpose", **write))  # no id: the author
+
+    def test_progress_md_alone_marks_a_book_project(self):
+        (self.book / "outline/scenes.yaml").unlink()
+        (self.book / "progress.md").write_text("# Progress\n", encoding="utf-8")
+        self.assertEqual(self.hook("Write", "book/bible/premise.md", agent="general-purpose", content="# P\n"),
+                         "deny")
+        self.assertEqual(self.bash("sed -i s/a/b/ notes.txt", agent="general-purpose"), "deny")
+        (self.book / "progress.md").unlink()
+        self.assertIsNone(self.bash("sed -i s/a/b/ notes.txt", agent="general-purpose"))
 
 
 class HookCommand(unittest.TestCase):

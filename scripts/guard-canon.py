@@ -74,15 +74,13 @@ WRITE_TOOLS = ("Write", "Edit", "MultiEdit")
 SHELL_TOOLS = ("Bash", "PowerShell")
 NOTEBOOK_TOOL = "NotebookEdit"
 # Tools that only read, ask, plan or report back, which subagents may use freely. Any other tool a subagent
-# calls in a book project, including ones Claude Code adds later, is checked (rules 1-4), or denied when its
-# input names a file, a folder, a command or code (RISKY_INPUT), since the guard cannot see what it changes.
+# calls in a book project, including ones Claude Code adds later (a scheduler whose prompt later runs as the
+# author, say), is checked (rules 1-4) or denied, since the guard cannot see what it changes.
 SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "LSP", "NotebookRead", "TodoWrite", "TodoRead", "TaskCreate",
               "TaskUpdate", "TaskList", "TaskGet", "WebFetch", "WebSearch", "Skill", "ToolSearch", "AskUserQuestion",
               "Agent", "Task", "TaskOutput", "BashOutput", "KillShell", "KillBash", "TaskStop", "SendMessage",
               "SubagentHandback", "StructuredOutput", "ListMcpResourcesTool", "ReadMcpResourceTool",
               "EnterPlanMode", "ExitPlanMode"}
-RISKY_INPUT = {"command", "cmd", "script", "code", "filepath", "path", "paths", "notebookpath", "filename", "file",
-               "files", "dir", "directory", "cwd", "content", "target", "destination", "source"}
 YAML_BREAKS = re.compile("[\x85\u2028\u2029]")  # line breaks to YAML that the guard's line view does not split on
 PYTHONS = {"python3", "python"}
 DEADLINE = 6.0
@@ -163,7 +161,35 @@ def target(raw, cwd, book_root):
     rel = locate(path, book_root)
     if rel is None:
         rel = book_relative(written, Path(os.path.normpath(str(book_root))))
+    if rel is None:
+        rel = through_link(path, book_root)
     return path, rel
+
+
+def through_link(path, book_root, limit=5000):
+    """The book path of `path` when it lies inside what a symlink in book/ points to (a shared series bible written
+    to by its own location), or None. Walks book/ without following links, at most `limit` entries."""
+    root = Path(os.path.normpath(str(book_root)))
+    if not root.is_dir():
+        return None
+    target_text, seen = fold(path.as_posix()), 0
+    for top, dirs, files in os.walk(root):
+        for name in dirs + files:
+            seen += 1
+            if seen > limit:
+                return None
+            link = Path(top) / name
+            if not link.is_symlink():
+                continue
+            try:
+                real = fold(link.resolve().as_posix()).rstrip("/")
+            except (OSError, RuntimeError):
+                continue
+            if target_text == real or target_text.startswith(real + "/"):
+                inner = target_text[len(real) + 1:]
+                rel = book_relative(link, root)
+                return f"{rel}/{inner}" if inner else rel
+    return None
 
 
 def is_book_project(book_root):
@@ -189,6 +215,10 @@ def line_ending_problem(tool, inp, raw_old, yaml=False):
             for x in (e.get("old_string"), e.get("new_string"))]
         if YAML_BREAKS.search(raw_old) or any(isinstance(x, str) and YAML_BREAKS.search(x) for x in written):
             return "the text holds a line break that YAML counts and the guard does not (U+0085, U+2028 or U+2029)"
+    new_texts = [inp.get("content")] if tool == "Write" else [
+        e.get("new_string") for e in ((inp.get("edits") if tool == "MultiEdit" else [inp]) or []) if isinstance(e, dict)]
+    if any(isinstance(x, str) and "\ufeff" in x for x in new_texts):
+        return "the new text holds an invisible byte-order mark (U+FEFF)"
     if tool == "Write":
         content = inp.get("content")
         return ("the new text holds a carriage return that is not part of a line break"
@@ -441,13 +471,6 @@ def check_bash(command, agent, ours, short, cwd, book_root):
     return 0
 
 
-def touches_files(inp):
-    """True if a tool's input names a file, a folder, a command or code (keys compared without case or _)."""
-    if not isinstance(inp, dict):
-        return True
-    return any(re.sub(r"[^a-z]", "", str(k).casefold()) in RISKY_INPUT for k in inp)
-
-
 def needs_check(tool, agent):
     """Whether the hook must run the checks: every file write, and any subagent call but a known read."""
     tool = str(tool)
@@ -497,10 +520,10 @@ def main(data):
         return check_mcp(tool, agent, book_root)
 
     if tool not in WRITE_TOOLS + (NOTEBOOK_TOOL,):
-        if agent and tool not in SAFE_TOOLS and touches_files(inp) and (ours or is_book_project(book_root)):
-            return decide("deny", f"novelsmith: in a book project, subagents may not use {tool} on files or commands; "
-                                  f"the canon guard cannot check what it changes. Use the Read, Write and Edit tools, "
-                                  f"or report what you need.")
+        if agent and tool not in SAFE_TOOLS and (ours or is_book_project(book_root)):
+            return decide("deny", f"novelsmith: in a book project, subagents may use only tools the canon guard "
+                                  f"knows; {tool} could change book files or act as the author where the guard cannot "
+                                  f"check it. Use the Read, Write and Edit tools, or report what you need.")
         return 0
     raw = inp.get("notebook_path" if tool == NOTEBOOK_TOOL else "file_path")
     if not raw:

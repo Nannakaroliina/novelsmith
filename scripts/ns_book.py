@@ -25,7 +25,10 @@ _HIDDEN = {"Cc", "Cf", "Mn", "Me", "Zs", "Zl", "Zp"}
 
 
 def normalize(text):
-    """Line endings as Python's read_text() and Markdown renderers see them: \\r\\n and \\r become \\n."""
+    """Text as the readers see it: \\r\\n and \\r become \\n (as read_text() and Markdown renderers do), and a
+    leading byte-order mark is dropped (as the validator's utf-8-sig reading and editors do), so the guard and the
+    validator agree on what the first line says."""
+    text = text[1:] if text.startswith("\ufeff") else text
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
