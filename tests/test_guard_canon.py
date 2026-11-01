@@ -1310,6 +1310,86 @@ class GuardCanon(unittest.TestCase):
                                     content=edit))
         self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", content=edit))
 
+    def test_a_linked_file_is_named_by_the_link_that_leaves_the_book(self):
+        series = self._shared_bible()
+        edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+        wb, sa = "novelsmith:worldbuilder", "novelsmith:story-architect"
+        # the series bible linked under research/, reached from bible/world/maps -> research/maps
+        (self.book / "bible/world/shared").unlink()
+        maps = self.book / "research/maps"
+        maps.mkdir(parents=True)
+        (self.book / "bible/world/maps").symlink_to(maps)
+        (maps / "shared").symlink_to(series)
+        decision, why = self.hook("Write", "book/bible/world/maps/shared/harbour.md", agent=wb, reason=True,
+                                  content=edit)
+        self.assertEqual(decision, "deny")
+        self.assertIn("book/research/maps/shared/harbour.md belongs to another stage", why)
+        # an in-book link from proposals/ into bible/world, where the series bible is linked
+        (self.book / "bible/world/shared").symlink_to(series)
+        (self.book / "proposals").mkdir(exist_ok=True)
+        (self.book / "proposals/world").symlink_to(Path("../bible/world"))
+        decision, why = self.hook("Write", "book/proposals/world/shared/harbour.md", agent=sa, reason=True,
+                                  content=edit)
+        self.assertEqual(decision, "deny")
+        self.assertIn("book/bible/world/shared/harbour.md belongs to another stage", why)
+        self.assertIsNone(self.hook("Write", "book/proposals/world/shared/harbour.md", agent=wb, content=edit))
+        # a link to a link: proposals/series -> bible/world/shared -> the series bible
+        (self.book / "proposals/series").symlink_to(Path("../bible/world/shared"))
+        decision, why = self.hook("Write", "book/proposals/series/harbour.md", agent=sa, reason=True, content=edit)
+        self.assertEqual(decision, "deny")
+        self.assertIn("book/bible/world/shared/harbour.md belongs to another stage", why)
+
+    def test_premise_and_scenes_behind_links_keep_their_protection(self):
+        import shutil
+        genre = dict(old_string="- Base genre: mystery", new_string="- Base genre: literary")
+        waiver = dict(old_string="  waivers: {}", new_string='  waivers: {subplot: "x"}')
+        (self.book / "proposals").mkdir(exist_ok=True)
+        # the whole bible and outline kept outside the book, each also linked from proposals/
+        for folder in ("bible", "outline"):
+            shutil.move(str(self.book / folder), str(self.project / f"series-{folder}"))
+            (self.book / folder).symlink_to(self.project / f"series-{folder}")
+            (self.book / "proposals" / folder).symlink_to(Path("..") / folder)
+        for agent in ("novelsmith:story-architect", "novelsmith:worldbuilder"):
+            with self.subTest(agent=agent):
+                self.assertEqual(self.hook("Edit", "book/proposals/bible/premise.md", agent=agent, **genre), "deny")
+        self.assertEqual(self.hook("Edit", "book/proposals/bible/premise.md", **genre), "ask")
+        self.assertEqual(self.hook("Edit", "book/proposals/outline/scenes.yaml", agent="novelsmith:outliner",
+                                   **waiver), "deny")
+        self.assertEqual(self.hook("Edit", "book/proposals/outline/scenes.yaml", **waiver), "ask")
+
+    def test_versioned_scenes_and_premise_links_are_still_scenes_and_premise(self):
+        import shutil
+        waiver = dict(old_string="  waivers: {}", new_string='  waivers: {subplot: "x"}')
+        genre = dict(old_string="- Base genre: mystery", new_string="- Base genre: literary")
+        outline = self.book / "outline"
+        (outline / "scenes.yaml").rename(outline / "scenes-v3.yaml")
+        (outline / "scenes.yaml").symlink_to("scenes-v3.yaml")
+        for spelled in ("book/outline/scenes.yaml", "book/outline/scenes-v3.yaml"):
+            for agent in ("general-purpose", "novelsmith:outliner"):
+                with self.subTest(spelled=spelled, agent=agent):
+                    self.assertEqual(self.hook("Edit", spelled, agent=agent, **waiver), "deny")
+            self.assertEqual(self.hook("Edit", spelled, **waiver), "ask")
+        # the whole outline folder a link to a draft inside the book
+        (outline / "scenes.yaml").unlink()
+        (outline / "scenes-v3.yaml").rename(outline / "scenes.yaml")
+        (self.book / "drafts").mkdir()
+        shutil.move(str(outline), str(self.book / "drafts/outline-v2"))
+        outline.symlink_to(Path("drafts/outline-v2"))
+        self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", agent="general-purpose", **waiver), "deny")
+        self.assertEqual(self.hook("Edit", "book/outline/scenes.yaml", **waiver), "ask")
+        self.assertIsNone(self.hook("Edit", "book/outline/scenes.yaml", agent="novelsmith:outliner",
+                                    old_string='  title: "Jäänlähtö"', new_string='  title: "Jäänlähtö II"'))
+        # premise.md a link to a later version
+        bible = self.book / "bible"
+        (bible / "premise.md").rename(bible / "premise-v2.md")
+        (bible / "premise.md").symlink_to("premise-v2.md")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", **genre), "ask")
+        self.assertEqual(self.hook("Edit", "book/bible/premise.md", agent="novelsmith:story-architect", **genre),
+                         "deny")
+        self.assertIsNone(self.hook("Edit", "book/bible/premise.md", agent="novelsmith:story-architect",
+                                    old_string="- Outcome of the climax: exposure on the ice road",
+                                    new_string="- Outcome of the climax: exposure on the frozen ice road"))
+
     def test_the_fallback_check_knows_linked_files(self):
         series = self._shared_bible()
         g = guard_module()

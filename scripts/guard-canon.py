@@ -160,21 +160,58 @@ def target(raw, cwd, book_root, budget=3.0):
     A file kept outside the book but reached through a symlink in book/ (a shared series bible) is linked: how is
     "through" when it was written by its path through that link, and "real" when it was written by its own location,
     which only a walk of book/'s links can tell; that walk may answer a CannotTell. The path is None outside the
-    book."""
+    book. scenes.yaml and premise.md are known by what file they are, whatever path reaches them."""
     written = Path(os.path.normpath(os.path.join(str(cwd), os.path.expanduser(raw))))
     path = written.resolve()
     rel = locate(path, book_root)
     if rel is not None:
-        return path, rel, ""
-    rel = book_relative(written, Path(os.path.normpath(str(book_root))))
-    if rel is not None:
-        return path, rel, "through"
+        return path, special(path, book_root) or rel, ""
+    root = Path(os.path.normpath(str(book_root)))
+    if book_relative(written, root) is not None:
+        rel = leaving_link(written.parts[len(root.parts):], book_root) or book_relative(written, root)
+        return path, special(path, book_root) or rel, "through"
     if not is_book_project(book_root):
         return path, None, ""
     found = through_link((path, written), book_root, budget=budget)
     if isinstance(found, CannotTell):
         return path, found, "real"
     return path, (strictest(found) if found else None), "real"
+
+
+def leaving_link(parts, book_root):
+    """The book path of a file written as book/<parts> that leaves the book through a symlink: the real place in
+    book/ of the link that leads out, plus the rest of the path, so links between book folders on the way change
+    nothing. Links are followed one at a time; None if the path never leaves the book or the links loop."""
+    cur, rel = Path(os.path.normpath(str(book_root))), ""
+    for i, name in enumerate(parts):
+        nxt, nrel = cur / name, f"{rel}/{fold(name)}" if rel else fold(name)
+        for _ in range(40):
+            try:
+                if not nxt.is_symlink():
+                    break
+                hop = Path(os.path.normpath(os.path.join(str(nxt.parent), os.readlink(nxt))))
+            except (OSError, ValueError):
+                return None
+            inside = locate(hop, book_root)
+            if inside is None:
+                return "/".join([nrel, *(fold(p) for p in parts[i + 1:])])
+            nxt, nrel = hop, inside
+        else:
+            return None
+        cur, rel = nxt, nrel
+    return None
+
+
+def special(path, book_root):
+    """SCENES or PREMISE when `path` is that very file, however it is reached (a link to a versioned copy), so its
+    waivers and settings stay the author's; else None."""
+    for name in (SCENES, PREMISE):
+        try:
+            if os.path.samefile(path, book_root / name):
+                return name
+        except (OSError, ValueError):
+            pass
+    return None
 
 
 def strictest(rels):
@@ -651,6 +688,9 @@ def main(data):
         return 0
     path, rel, how = target(raw, cwd, book_root)
     if isinstance(rel, CannotTell):
+        if ours:
+            return decide("deny", f"novelsmith: {short} writes only under book/. If {raw} is a book file reached "
+                                  f"through a link, write it by its path inside book/.")
         if agent:
             return decide("deny", f"novelsmith: the canon guard cannot tell whether {raw} is a book file reached "
                                   f"through a link in book/ ({rel.why}), so subagents' writes outside book/ are "
