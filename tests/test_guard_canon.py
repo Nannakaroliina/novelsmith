@@ -1044,7 +1044,12 @@ class GuardCanon(unittest.TestCase):
         wipe = "# Harbour\n- The harbour never freezes.\n"
         self.assertEqual(self.hook("Write", real, agent="general-purpose", raw=True, content=wipe), "deny")
         self.assertEqual(self.hook("Write", real, raw=True, content=wipe), "ask")
-        self.assertIsNone(self.hook("Write", str(series / "port.md"), agent="novelsmith:worldbuilder", raw=True,
+        decision, why = self.hook("Write", str(series / "port.md"), agent="novelsmith:worldbuilder", raw=True,
+                                  reason=True, content="# Port\n")
+        self.assertEqual(decision, "deny")
+        self.assertIn("Write it by that path", why)
+        self.assertIn("book/bible/world/shared/port.md", why)
+        self.assertIsNone(self.hook("Write", "book/bible/world/shared/port.md", agent="novelsmith:worldbuilder",
                                     content="# Port\n"))
 
     def test_subagent_identity_comes_from_agent_id(self):
@@ -1249,33 +1254,77 @@ class GuardCanon(unittest.TestCase):
     def test_a_shortcut_inside_the_book_does_not_rename_canon(self):
         series = self._shared_bible()
         (self.book / "world").symlink_to(self.book / "bible/world")
-        self.assertEqual(guard_module().through_link((series / "harbour.md",), self.book),
-                         ("bible/world/shared/harbour.md",))
         edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+        # book/world/... is judged where it really is: bible/world/...
+        self.assertEqual(self.hook("Write", "book/world/inn.md", agent="general-purpose", content="# Inn\n"), "deny")
+        self.assertIsNone(self.hook("Write", "book/world/inn.md", agent="novelsmith:worldbuilder", content="# Inn\n"))
         self.assertEqual(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
                                    content=edit), "deny")
-        self.assertIsNone(self.hook("Write", str(series / "harbour.md"), agent="novelsmith:worldbuilder", raw=True,
+        self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", agent="novelsmith:worldbuilder",
                                     content=edit))
 
-    def test_every_path_that_reaches_a_file_is_checked(self):
+    def test_a_file_in_the_book_is_judged_where_it_really_is(self):
+        # a link between two book folders changes nothing: research/maps stays research, however it is written
+        maps = self.book / "research/maps"
+        maps.mkdir(parents=True)
+        (self.book / "bible/world").mkdir(parents=True, exist_ok=True)
+        (self.book / "bible/world/maps").symlink_to(maps)
+        for spelled in ("book/research/maps/harbour.md", "book/bible/world/maps/harbour.md"):
+            self.assertIsNone(self.hook("Write", spelled, agent="general-purpose", content="# Harbour\n"))
+        self.assertEqual(self.hook("Write", "book/bible/world/maps/harbour.md", agent="novelsmith:worldbuilder",
+                                   content="# Harbour\n"), "deny")
+
+    def test_linked_files_are_for_novelsmith_agents_by_their_book_path(self):
         series = self._shared_bible()
-        (self.book / "archive").symlink_to(self.project)
-        self.assertEqual(guard_module().through_link((series / "harbour.md",), self.book),
-                         ("archive/series-bible/harbour.md", "bible/world/shared/harbour.md"))
+        (self.book / "series").symlink_to(self.project)  # the whole series folder, linked for reference
         edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
-        for spelled in (str(series / "harbour.md"), str(self.book / "archive/series-bible/harbour.md")):
-            decision, why = self.hook("Write", spelled, agent="general-purpose", raw=True, reason=True, content=edit)
-            self.assertEqual(decision, "deny")
-            self.assertIn("book/bible/world/shared/harbour.md is canon", why)
-            decision, why = self.hook("Write", spelled, agent="novelsmith:worldbuilder", raw=True, reason=True,
-                                      content=edit)
-            self.assertEqual(decision, "deny")
-            self.assertIn("book/archive/series-bible/harbour.md belongs to another stage", why)
-        (self.book / "archive").rename(self.book / "zz-archive")  # now the path in scope comes first
-        decision, why = self.hook("Write", str(series / "harbour.md"), agent="novelsmith:worldbuilder", raw=True,
-                                  reason=True, content=edit)
+        wb = "novelsmith:worldbuilder"
+        self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", agent=wb, content=edit))
+        decision, why = self.hook("Write", "book/series/series-bible/harbour.md", agent=wb, reason=True, content=edit)
         self.assertEqual(decision, "deny")
-        self.assertIn("book/zz-archive/series-bible/harbour.md belongs to another stage", why)
+        self.assertIn("book/series/series-bible/harbour.md belongs to another stage", why)
+        for spelled in ("book/bible/world/shared/harbour.md", "book/series/series-bible/harbour.md",
+                        "series-bible/harbour.md"):
+            decision, why = self.hook("Write", spelled, agent="general-purpose", reason=True, content=edit)
+            self.assertEqual(decision, "deny")
+        self.assertIn("reached through a link in book/", why)
+        self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", content=edit))
+        self.assertEqual(self.hook("Write", "series-bible/harbour.md", content="# Harbour\n"), "ask")
+
+    def test_a_series_file_behind_a_link_in_an_in_book_folder_is_found(self):
+        series = self._shared_bible()
+        (self.book / "bible/world/shared").unlink()
+        maps = self.book / "research/maps"
+        maps.mkdir(parents=True)
+        (self.book / "bible/world/maps").symlink_to(maps)
+        (maps / "shared").symlink_to(series)
+        self.assertEqual(self.hook("Write", str(series / "harbour.md"), agent="general-purpose", raw=True,
+                                   content="# Harbour\n"), "deny")
+        self.assertEqual(self.hook("Write", str(series / "harbour.md"), raw=True, content="# Harbour\n"), "ask")
+
+    def test_a_known_book_path_never_waits_for_the_walk(self):
+        self._shared_bible()
+        self._folders(self.book / "research")  # the walk would answer "cannot tell"
+        edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+        self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", agent="novelsmith:worldbuilder",
+                                    content=edit))
+        self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", content=edit))
+
+    def test_the_fallback_check_knows_linked_files(self):
+        series = self._shared_bible()
+        g = guard_module()
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.project)
+        try:
+            for raw, expected in ((str(series / "harbour.md"), True), ("book/bible/world/shared/harbour.md", True),
+                                  ("src/app.py", False)):
+                payload = {"cwd": str(self.project), "tool_name": "Write", "tool_input": {"file_path": raw}}
+                with self.subTest(raw=raw):
+                    self.assertIs(g.writes_book(payload), expected)
+            self._folders(self.book / "research")
+            payload = {"cwd": str(self.project), "tool_name": "Write", "tool_input": {"file_path": "src/app.py"}}
+            self.assertIs(g.writes_book(payload), True)  # cannot tell counts as the book
+        finally:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
 
     def test_dangling_and_looping_links_are_passed_over(self):
         missing = self.project / "series-bible"

@@ -154,21 +154,27 @@ def locate(path, book_root):
     return None
 
 
-def target(raw, cwd, book_root):
-    """(resolved path, the file's paths inside book/) for a tool's file argument. The paths are a sorted tuple,
-    empty when the file is outside the book, or a CannotTell. It is in the book if the path as written (~ expanded,
-    normalised) or the file it resolves to lies in book/, or a symlink in book/ leads to it (a series bible shared
-    between books). Every path that reaches the file is given, so the strictest rule can apply."""
+def target(raw, cwd, book_root, budget=3.0):
+    """(resolved path, path inside book/, how) for a tool's file argument (~ expanded, normalised). A file inside
+    book/ is judged by where it really is there, so a link between two book folders changes nothing (how is "").
+    A file kept outside the book but reached through a symlink in book/ (a shared series bible) is linked: how is
+    "through" when it was written by its path through that link, and "real" when it was written by its own location,
+    which only a walk of book/'s links can tell; that walk may answer a CannotTell. The path is None outside the
+    book."""
     written = Path(os.path.normpath(os.path.join(str(cwd), os.path.expanduser(raw))))
     path = written.resolve()
-    real = locate(path, book_root)
-    rels = {r for r in (real, book_relative(written, Path(os.path.normpath(str(book_root))))) if r is not None}
-    if real is None and is_book_project(book_root):
-        linked = through_link((path, written), book_root)
-        if isinstance(linked, CannotTell):
-            return path, linked
-        rels.update(linked)
-    return path, tuple(sorted(rels))
+    rel = locate(path, book_root)
+    if rel is not None:
+        return path, rel, ""
+    rel = book_relative(written, Path(os.path.normpath(str(book_root))))
+    if rel is not None:
+        return path, rel, "through"
+    if not is_book_project(book_root):
+        return path, None, ""
+    found = through_link((path, written), book_root, budget=budget)
+    if isinstance(found, CannotTell):
+        return path, found, "real"
+    return path, (strictest(found) if found else None), "real"
 
 
 def strictest(rels):
@@ -225,11 +231,11 @@ def unreadable(path, via, error):
 
 
 def through_link(paths, book_root, limit=5000, budget=3.0):
-    """Every book path of a file (`paths`: its spellings) that reaches it through a symlink in book/ (a shared
-    series bible written to by its own location), as a sorted tuple, empty when there is none, or a CannotTell when
-    the walk could not finish. A link's target is matched by identity as well as by text. Links inside a linked
-    folder are followed too, but only after every real folder of book/, so a folder in the book is named by its own
-    path. Only folders and links count toward `limit`, so plain files never make the walk give up."""
+    """The book paths of a file (`paths`: its spellings) that reach it through a symlink in book/ (a shared series
+    bible written to by its own location), as a sorted tuple, empty when there is none, or a CannotTell when the walk
+    could not finish. What matters is whether there is any: a folder reached twice is walked once, so not every path
+    is listed. A link's target is matched by identity as well as by text, and links inside a linked folder are
+    followed too. Only folders and links count toward `limit`, so plain files never make the walk give up."""
     root = Path(os.path.normpath(str(book_root)))
     texts = {fold(p.as_posix()) for p in paths}
     ids = {}
@@ -643,24 +649,30 @@ def main(data):
     raw = inp.get("notebook_path" if tool == NOTEBOOK_TOOL else "file_path")
     if not raw:
         return 0
-    path, rels = target(raw, cwd, book_root)
-    if isinstance(rels, CannotTell):
+    path, rel, how = target(raw, cwd, book_root)
+    if isinstance(rel, CannotTell):
         if agent:
             return decide("deny", f"novelsmith: the canon guard cannot tell whether {raw} is a book file reached "
-                                  f"through a link in book/ ({rels.why}), so subagents' writes outside book/ are "
+                                  f"through a link in book/ ({rel.why}), so subagents' writes outside book/ are "
                                   f"denied in this project until the author fixes that. Report it to the author, with "
-                                  f"the fix: {rels.fix}. If the file belongs to the book, write it by its path inside "
-                                  f"book/.")
+                                  f"the fix: {rel.fix}.")
         return decide("ask", f"novelsmith: the canon guard cannot tell whether {raw} is a book file reached through "
-                             f"a link in book/ ({rels.why}). Allow it only if you asked for this change. To end these "
-                             f"prompts, {rels.fix}.")
-    if not rels:
+                             f"a link in book/ ({rel.why}). Allow it only if you asked for this change. To end these "
+                             f"prompts, {rel.fix}.")
+    if rel is None:
         if ours:
             return decide("deny", f"novelsmith: {short} writes only under book/; {raw} is outside the book.")
         return 0
-    rel = strictest(rels)
     if not ours and not is_book_project(book_root):
         return 0  # another tool's book/ folder
+    if how and agent and not ours:
+        return decide("deny", f"novelsmith: book/{rel} is kept outside the book and reached through a link in book/ "
+                              f"(such as a shared series bible). Only novelsmith's agents, each in its own folders, "
+                              f"and the author in the main conversation change linked files. Report what you need "
+                              f"instead.")
+    if how == "real" and agent:
+        return decide("deny", f"novelsmith: {raw} is the book file book/{rel}, reached through a link in book/. "
+                              f"Write it by that path, so the canon guard can check it.")
     if tool == NOTEBOOK_TOOL:
         if agent:
             return decide("deny", f"novelsmith: subagents may not edit notebooks under book/ ({raw}); book files "
@@ -673,11 +685,9 @@ def main(data):
         if ours and scopes is None:
             return decide("deny", f"novelsmith: agent {agent} has no write scope registered in guard-canon.py "
                                   f"AGENT_SCOPES, so it may not write under book/.")
-        elsewhere = [r for r in rels if not any(fnmatch.fnmatchcase(r, g) for g in scopes or ())]
-        if scopes is not None and elsewhere:
+        if scopes is not None and not any(fnmatch.fnmatchcase(rel, g) for g in scopes):
             return decide("deny", f"novelsmith: {short} may write only {', '.join('book/' + g for g in scopes)}; "
-                                  f"book/{elsewhere[0]} belongs to another stage. Write a proposal in book/proposals/ "
-                                  f"instead.")
+                                  f"book/{rel} belongs to another stage. Write a proposal in book/proposals/ instead.")
         if scopes is None and any(fnmatch.fnmatchcase(rel, g) for g in CANON):
             return decide("deny", f"novelsmith: book/{rel} is canon. Only the bible stage agents (or the author in the "
                                   f"main conversation) edit book/bible/. Propose the change in book/proposals/.")
@@ -780,7 +790,8 @@ def writes_book(payload):
     try:
         cwd = Path(payload.get("cwd") or os.getcwd())
         project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
-        return bool(target(raw, cwd, project / "book")[1])  # a CannotTell counts as the book
+        # a short walk, so the hook still answers before its timeout; a CannotTell counts as the book
+        return target(raw, cwd, project / "book", budget=1.0)[1] is not None
     except Exception:  # cannot tell: treat it as the book's
         return True
 
