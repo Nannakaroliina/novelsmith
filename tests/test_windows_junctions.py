@@ -1,6 +1,8 @@
 """Windows directory junctions against the canon guard, on a real NTFS folder. Skipped elsewhere.
 
 Run on a Windows machine (no administrator rights needed):  python -m unittest tests.test_windows_junctions -v
+If the temp folder cannot hold a junction (a FAT, exFAT or network drive), the tests fail rather than skip, so a run
+never looks settled without checking anything; set NOVELSMITH_SKIP_JUNCTIONS=1 to skip them on purpose.
 """
 import json
 import os
@@ -28,9 +30,14 @@ def guard_module():
 
 def junction(link, target):
     """mklink /J, which needs no administrator rights or Developer Mode."""
-    p = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+    p = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
     if p.returncode != 0:
-        raise unittest.SkipTest(f"cannot make a junction here: {p.stdout.strip()} {p.stderr.strip()}")
+        # cmd writes in the console code page, so decode only for the message, and never fail on it
+        said = " ".join(out.decode("utf-8", "replace").strip() for out in (p.stdout, p.stderr))
+        why = f"cannot make a junction in {link.parent}: {said}"
+        if os.environ.get("NOVELSMITH_SKIP_JUNCTIONS"):
+            raise unittest.SkipTest(why)
+        raise AssertionError(f"{why}. Put TEMP on an NTFS drive, or set NOVELSMITH_SKIP_JUNCTIONS=1 to skip.")
 
 
 @unittest.skipUnless(os.name == "nt", "Windows junctions only")
@@ -49,6 +56,7 @@ class WindowsJunctions(unittest.TestCase):
         self.guard = guard_module()
 
     def hook(self, path, agent=None, content=HARBOUR.replace("# Harbour", "# Harbour\nFerries run twice a day.")):
+        """(decision, reason), or None when the guard lets the call through."""
         payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Write",
                    "tool_input": {"file_path": str(path), "content": content}}
         if agent:
@@ -57,7 +65,17 @@ class WindowsJunctions(unittest.TestCase):
         p = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload), capture_output=True, text=True,
                            encoding="utf-8", env=env)
         self.assertEqual(p.returncode, 0, p.stderr)
-        return json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"] if p.stdout.strip() else None
+        if not p.stdout.strip():
+            return None
+        out = json.loads(p.stdout)["hookSpecificOutput"]
+        return out["permissionDecision"], out["permissionDecisionReason"]
+
+    def assertDecision(self, answer, decision, says):
+        """The guard decided by its rule (the reason says so), not on its fallback for a check that failed."""
+        self.assertIsNotNone(answer)
+        self.assertEqual(answer[0], decision, answer[1])
+        self.assertIn(says, answer[1])
+        self.assertNotIn("could not", answer[1])
 
     def test_the_listing_marks_a_junction(self):
         # what the link walk reads: no extra system call, the same answer DirEntry.is_junction gives from 3.12
@@ -95,13 +113,16 @@ class WindowsJunctions(unittest.TestCase):
                          ("bible/world/shared/harbour.md", "real"))
         self.assertEqual(self.guard.target(str(through), self.project, self.book)[1:],
                          ("bible/world/shared/harbour.md", "through"))
+        linked = "is kept outside the book and reached through a link in book/"
         # by its real location: denied to every subagent, the shared canon checked for the author
-        self.assertEqual(self.hook(real, agent="general-purpose"), "deny")
-        self.assertEqual(self.hook(real, agent="novelsmith:worldbuilder"), "deny")
-        self.assertEqual(self.hook(real, content="# Harbour\n- The harbour never freezes.\n"), "ask")
+        self.assertDecision(self.hook(real, agent="general-purpose"), "deny", linked)
+        self.assertDecision(self.hook(real, agent="novelsmith:worldbuilder"), "deny", "Write it by that path")
+        self.assertDecision(self.hook(real, content="# Harbour\n- The harbour never freezes.\n"), "ask",
+                            "⚓ text in book/bible/world/shared/harbour.md")
         # by its path in book/: only the stage whose folder it is
-        self.assertEqual(self.hook(through, agent="general-purpose"), "deny")
-        self.assertEqual(self.hook(through, agent="novelsmith:story-architect"), "deny")
+        self.assertDecision(self.hook(through, agent="general-purpose"), "deny", linked)
+        self.assertDecision(self.hook(through, agent="novelsmith:story-architect"), "deny",
+                            "book/bible/world/shared/harbour.md belongs to another stage")
         self.assertIsNone(self.hook(through, agent="novelsmith:worldbuilder"))
 
 
