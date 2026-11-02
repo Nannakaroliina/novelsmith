@@ -57,6 +57,8 @@ python3 -m unittest discover -s tests
 python3 scripts/selfcheck.py
 ```
 
+`tests/test_windows_junctions.py` checks the canon guard against real Windows junctions and is skipped elsewhere; the `Windows` GitHub Actions workflow runs it on Windows with Python 3.9 and the newest Python on every push.
+
 ## The workflow so far
 
 | Stage | Invoke | Agent(s) | Writes | Checkpoint |

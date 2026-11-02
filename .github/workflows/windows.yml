@@ -1,0 +1,30 @@
+# The canon guard against real Windows directory junctions (tests/test_windows_junctions.py, skipped elsewhere).
+# Python 3.9 takes the guard's check for Pythons before 3.12; 3.x the newest.
+name: Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  junctions:
+    name: Junctions (Python ${{ matrix.python }})
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.x"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Windows junction tests
+        run: python -B -m unittest tests.test_windows_junctions -v
