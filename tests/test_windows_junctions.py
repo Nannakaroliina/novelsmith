@@ -18,6 +18,7 @@ import fixture_book as fixture  # noqa: E402
 
 SCRIPT = ROOT / "scripts" / "guard-canon.py"
 HARBOUR = "# Harbour\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+HARBOUR_EDIT = HARBOUR.replace("# Harbour", "# Harbour\nFerries run twice a day.")
 
 
 def guard_module():
@@ -55,7 +56,7 @@ class WindowsJunctions(unittest.TestCase):
         self.addCleanup(os.rmdir, self.shared)  # the junction only, before the folder behind it is cleaned up
         self.guard = guard_module()
 
-    def hook(self, path, agent=None, content=HARBOUR.replace("# Harbour", "# Harbour\nFerries run twice a day.")):
+    def hook(self, path, agent=None, content=HARBOUR_EDIT):
         """(decision, reason), or None when the guard lets the call through."""
         payload = {"hook_event_name": "PreToolUse", "cwd": str(self.project), "tool_name": "Write",
                    "tool_input": {"file_path": str(path), "content": content}}

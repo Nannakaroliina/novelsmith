@@ -26,16 +26,19 @@ What Cowork changes:
 
 ## Use in Claude Code
 
-1. Get the plugin folder as in step 1 above (no zip needed).
-2. Open a terminal in the folder that holds (or will hold) your `book/`, your writing project, not the plugin folder, and start Claude Code with the plugin:
+1. Get the plugin folder and Python 3 as in step 1 above (no zip needed), and install [Claude Code](https://claude.com/claude-code).
+2. In a terminal in the plugin folder, run the installer (on Windows, `py scripts/install.py`):
 
    ```bash
-   claude --plugin-dir "/path/to/novelsmith"
+   python3 scripts/install.py
    ```
 
-3. Run `/novelsmith:doctor`, then `/novelsmith:novel-start`.
+   It copies the plugin's own files (the same ones the Cowork zip holds) to a folder of their own (`~/Library/Application Support/novelsmith/plugin` on a Mac, `%LOCALAPPDATA%\novelsmith\plugin` on Windows, `~/.local/share/novelsmith/plugin` on Linux), registers that folder as the `novelsmith` plugin marketplace and installs the plugin for every project. You can delete the downloaded folder afterwards. `--scope project` installs it only for the project in the folder you run it from; `--uninstall` removes it again.
+3. Open a terminal in the folder that holds (or will hold) your `book/`, your writing project, not the plugin folder, start `claude`, and run `/novelsmith:doctor`, then `/novelsmith:novel-start`.
 
-To upgrade, in either app: get the new plugin folder (and, for Cowork, build and upload the new zip over the old one). Your `book/` is not touched.
+Or, without installing, start Claude Code with the plugin for one session: `claude --plugin-dir "/path/to/novelsmith"`.
+
+To upgrade, in either app: get the new plugin folder, then run the installer from it again (for Cowork, build and upload the new zip over the old one). Your `book/` is not touched.
 
 ## Develop in Claude Code
 
@@ -43,18 +46,16 @@ To upgrade, in either app: get the new plugin folder (and, for Cowork, build and
 claude --plugin-dir ./novelsmith
 ```
 
-Validate after edits, run the tests, and run the self-check:
+Before every push, run the quality and lint checks from the plugin folder:
 
 ```bash
-claude plugin validate ./novelsmith --strict
+python3 scripts/check.py
 ```
 
-```bash
-python3 -m unittest discover -s tests
-```
+They check every tracked or new file for UTF-8, LF line ends, a final newline, trailing spaces and invisible characters in code, valid JSON and OS metadata files; scan for secret-looking files and credentials; check skill and agent frontmatter against the upload rules; lint the Python with `ruff` (settings in `ruff.toml`); `shellcheck` the hook command in `hooks/hooks.json`; and run `claude plugin validate --strict` on the plugin and its marketplace manifest (skipped where `claude` is not installed). They need `ruff` and `shellcheck` (`brew install ruff shellcheck`). `--all` also runs the tests and the self-check, which the `Check` GitHub Actions workflow does on every push, followed by the tests again with PyYAML:
 
 ```bash
-python3 scripts/selfcheck.py
+python3 scripts/check.py --all
 ```
 
 `tests/test_windows_junctions.py` checks the canon guard against real Windows junctions and is skipped elsewhere; the `Windows` GitHub Actions workflow runs it on Windows with Python 3.9 and the newest Python on every push.
@@ -87,6 +88,8 @@ python3 scripts/selfcheck.py
 | `scripts/validate-outline.py` | outliner, `outline check` | Deterministic manifest checks (below) |
 | `scripts/guard-canon.py` + `hooks/hooks.json` | automatic | Protects anchored decisions and per-agent write scopes |
 | `scripts/selfcheck.py`, `scripts/build_zip.py` | doctor; by hand | Script self-test on a throwaway fixture book; upload zip for Cowork |
+| `scripts/install.py`, `.claude-plugin/marketplace.json` | by hand | Installs (or removes) the plugin in Claude Code from a clean copy of the plugin files |
+| `scripts/check.py`, `ruff.toml` | before a push; CI | Quality and lint checks; not shipped in the plugin |
 | `templates/` | — | Premise, style sheet, character, world, timeline, acts, scene manifest, clue ledger, summaries, critique note, progress |
 
 ## The book tree

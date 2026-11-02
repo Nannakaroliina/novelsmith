@@ -104,11 +104,11 @@ MCP_CHANGE_WORDS = {"write", "edit", "create", "update", "delete", "remove", "mo
 # The ⚓ lines and sections a file copied from a template may start with; tests keep these in step with templates/.
 NEW_FILE_ANCHOR_LINES = {
     "## ⚓ Anchored",
-    '<!-- Everything under a "## ⚓ Anchored" heading is the author\'s decision. Agents MUST NOT change it or argue '
-    "against it. -->",
-    '<!-- Rules for critics: every finding quotes the manuscript as evidence. Findings are observations with a '
-    'proposed change, not verdicts. Never contradict a "## ⚓ Anchored" decision. Severity: P0 = breaks the '
-    "story/contract; P1 = weakens it; P2 = polish. -->",
+    ('<!-- Everything under a "## ⚓ Anchored" heading is the author\'s decision. Agents MUST NOT change it or argue '
+     "against it. -->"),
+    ('<!-- Rules for critics: every finding quotes the manuscript as evidence. Findings are observations with a '
+     'proposed change, not verdicts. Never contradict a "## ⚓ Anchored" decision. Severity: P0 = breaks the '
+     "story/contract; P1 = weakens it; P2 = polish. -->"),
 }
 NEW_FILE_ANCHOR_SECTIONS = {
     ("## ⚓ Anchored", ""),

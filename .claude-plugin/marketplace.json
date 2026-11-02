@@ -1,0 +1,12 @@
+{
+  "name": "novelsmith",
+  "owner": { "name": "Nanna Setämaa" },
+  "description": "Novelsmith, an outline-first multi-agent novel writing plugin, installed from this repository.",
+  "plugins": [
+    {
+      "name": "novelsmith",
+      "source": "./",
+      "description": "Outline-first, multi-agent novel writing. The book lives in a book/ tree of Markdown and YAML; specialist agents propose and write files there and stop at every stage boundary so the author decides."
+    }
+  ]
+}

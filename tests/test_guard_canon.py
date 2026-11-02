@@ -897,8 +897,8 @@ class GuardCanon(unittest.TestCase):
         for raw, decision, code in (
                 ('{"tool_name": "mcp__fs__write_file", "agent_id": "a1", "agent_type": "general-purpose", '
                  '"tool_input": {"x": %s}}' % deep, "deny", 0),
-                (b'{"tool_name": "Write", "agent_id": "a1", "agent_type": "general-purpose", "tool_input": '
-                 b'{"x": "\xff"}}', "deny", 0),
+                ((b'{"tool_name": "Write", "agent_id": "a1", "agent_type": "general-purpose", "tool_input": '
+                  b'{"x": "\xff"}}'), "deny", 0),
                 ('{"tool_name": "Write", "tool_input": {"file_path": "book/bible/premise.md", "x": %s}}' % deep,
                  "ask", 0),
                 ("not json", None, 1)):
@@ -1275,7 +1275,7 @@ class GuardCanon(unittest.TestCase):
                                    content="# Harbour\n"), "deny")
 
     def test_linked_files_are_for_novelsmith_agents_by_their_book_path(self):
-        series = self._shared_bible()
+        self._shared_bible()
         (self.book / "series").symlink_to(self.project)  # the whole series folder, linked for reference
         edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
         wb = "novelsmith:worldbuilder"
@@ -1285,9 +1285,10 @@ class GuardCanon(unittest.TestCase):
         self.assertIn("book/series/series-bible/harbour.md belongs to another stage", why)
         for spelled in ("book/bible/world/shared/harbour.md", "book/series/series-bible/harbour.md",
                         "series-bible/harbour.md"):
-            decision, why = self.hook("Write", spelled, agent="general-purpose", reason=True, content=edit)
-            self.assertEqual(decision, "deny")
-        self.assertIn("reached through a link in book/", why)
+            with self.subTest(spelled=spelled):
+                decision, why = self.hook("Write", spelled, agent="general-purpose", reason=True, content=edit)
+                self.assertEqual(decision, "deny")
+                self.assertIn("reached through a link in book/", why)
         self.assertIsNone(self.hook("Write", "book/bible/world/shared/harbour.md", content=edit))
         self.assertEqual(self.hook("Write", "series-bible/harbour.md", content="# Harbour\n"), "ask")
 

@@ -28,9 +28,9 @@ import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ns_book  # noqa: E402
-import ns_yaml  # noqa: E402
-from ns_book import section, strip_html_comments  # noqa: E402
+import ns_book
+import ns_yaml
+from ns_book import section, strip_html_comments
 
 REQUIRED_FIELDS = ("id", "chapter", "pov", "goal", "conflict", "turn", "outcome", "value_shift", "word_target")
 STATUSES = {"planned", "drafted", "revised", "locked"}

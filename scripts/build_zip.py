@@ -3,8 +3,9 @@
 
 The archive holds one top-level novelsmith/ folder with only what the plugin
 loads: committed files under the plugin's own folders (INCLUDE). Untracked
-and git-ignored files, research docs, tests, the review brief and this script
-stay out, and a file that looks like a secret stops the build.
+and git-ignored files, research docs, tests, the review brief and the
+repository's own tools (EXCLUDE_FILES) stay out, and a file that looks like a
+secret stops the build. scripts/install.py installs the same files into Claude Code.
 
 Before zipping it checks skill and agent frontmatter against the rules the
 claude.ai upload enforces (Agent Skills spec): a parseable frontmatter block,
@@ -27,7 +28,9 @@ import ns_yaml  # noqa: E402
 
 INCLUDE_DIRS = (".claude-plugin", "agents", "assets", "hooks", "scripts", "skills", "templates")
 INCLUDE_FILES = ("README.md", "LICENSE")
-EXCLUDE_FILES = {"scripts/build_zip.py"}
+# Repository tooling, not part of what the plugin loads. The marketplace manifest is for installing
+# from this folder with scripts/install.py; it has no place in an uploaded plugin.
+EXCLUDE_FILES = {"scripts/build_zip.py", "scripts/check.py", "scripts/install.py", ".claude-plugin/marketplace.json"}
 SECRET_RE = re.compile(r"(^|/)(\.env(\..*)?|.*\.(pem|key|p12|pfx|keystore)|id_(rsa|dsa|ed25519)(\..*)?|"
                        r"credentials\.json|secrets?\.ya?ml|\.netrc|\.npmrc)$", re.I)
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
@@ -95,7 +98,8 @@ def select_files(root, tracked):
     return files, secrets
 
 
-def main():
+def plugin_files():
+    """The files the plugin ships, after the upload checks; exits naming every problem when one fails."""
     problems = []
     for p in sorted((ROOT / "skills").glob("*/SKILL.md")):
         problems += frontmatter_problems(p, True)
@@ -111,7 +115,11 @@ def main():
     problems += [f"{p.relative_to(ROOT).as_posix()}: looks like a secret or is a symbolic link; remove it from the plugin" for p in secrets]
     if problems:
         sys.exit("refusing to build:\n" + "\n".join(f"- {x}" for x in problems))
+    return files
 
+
+def main():
+    files = plugin_files()
     manifest = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     out = ROOT / "dist" / f"{manifest['name']}-{manifest['version']}.zip"
     out.parent.mkdir(exist_ok=True)

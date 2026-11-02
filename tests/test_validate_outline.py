@@ -333,10 +333,10 @@ class ValidateOutline(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
     def test_lookalike_letters_in_names(self):
-        (self.book / "bible/characters/elias-koski.md").write_text("# Еlias Koski\n", encoding="utf-8")
+        (self.book / "bible/characters/elias-koski.md").write_text("# \u0415lias Koski\n", encoding="utf-8")  # Cyrillic Ye
         out = self.assert_error("names")
         self.assertTrue(any("mixes look-alike letters" in f["message"] for f in out["findings"]))
-        (self.book / "bible/characters/elias-koski.md").write_text("# Eli​as Koski\n", encoding="utf-8")
+        (self.book / "bible/characters/elias-koski.md").write_text("# Eli\u200bas Koski\n", encoding="utf-8")
         out = self.assert_error("names")
         self.assertTrue(any("invisible" in f["message"] for f in out["findings"]))
 

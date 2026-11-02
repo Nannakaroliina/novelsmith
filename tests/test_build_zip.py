@@ -16,7 +16,8 @@ class SelectFiles(unittest.TestCase):
         for rel in ("skills/s/SKILL.md", "agents/a.md", "scripts/x.py", "scripts/build_zip.py", "README.md",
                     ".claude-plugin/plugin.json", "tests/t.py", "docs/d.md", "book/bible/premise.md", ".env",
                     ".ravenwatch.md", "skills/.DS_Store", "scripts/__pycache__/x.pyc", "scripts/server.key",
-                    ".claude/settings.local.json", "templates/.hidden"):
+                    ".claude/settings.local.json", "templates/.hidden", "scripts/check.py", "scripts/install.py",
+                    ".claude-plugin/marketplace.json"):
             (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
             (self.root / rel).write_text("x", encoding="utf-8")
 
