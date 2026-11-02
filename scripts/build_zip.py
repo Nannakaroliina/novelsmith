@@ -98,8 +98,8 @@ def select_files(root, tracked):
     return files, secrets
 
 
-def plugin_files():
-    """The files the plugin ships, after the upload checks; exits naming every problem when one fails."""
+def upload_problems():
+    """Breaches of the claude.ai upload rules in skills, agents and the plugin's layout (scripts/check.py runs these too)."""
     problems = []
     for p in sorted((ROOT / "skills").glob("*/SKILL.md")):
         problems += frontmatter_problems(p, True)
@@ -107,6 +107,12 @@ def plugin_files():
         problems += frontmatter_problems(p, False)
     if (ROOT / "bin").exists():
         problems.append("bin/ present: claude.ai and Cowork refuse plugins with a top-level bin/ directory")
+    return problems
+
+
+def plugin_files():
+    """The files the plugin ships, after the upload checks; exits naming every problem when one fails."""
+    problems = upload_problems()
     tracked = tracked_files(ROOT)
     if tracked is None:
         print("build_zip: not a git checkout (or git unavailable); packing every allowlisted file on disk, "

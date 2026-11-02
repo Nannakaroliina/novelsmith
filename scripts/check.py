@@ -36,7 +36,7 @@ SECRET_PATTERNS = (
     ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\b")),
     ("Anthropic API key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{30,}")),
-    ("OpenAI API key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}")),
+    ("OpenAI API key", re.compile(r"\bsk-(?:proj-[A-Za-z0-9_-]{40,}|[A-Za-z0-9]{40,})")),
     ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("Slack token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}")),
 )
@@ -66,7 +66,13 @@ def tool(name):
 
 
 def run(args, **kw):
-    p = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
+    """(exit code, output); a timeout or a tool that cannot start is a failure with a message, not a crash."""
+    try:
+        p = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
+    except subprocess.TimeoutExpired:
+        return 1, f"{Path(args[0]).name} did not finish within {kw.get('timeout')} s"
+    except OSError as exc:
+        return 1, f"{Path(args[0]).name} could not run: {exc}"
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
@@ -123,12 +129,7 @@ def check_secrets(files):
 
 
 def check_frontmatter(_files):
-    problems = []
-    for p in sorted((ROOT / "skills").glob("*/SKILL.md")):
-        problems += build_zip.frontmatter_problems(p, True)
-    for p in sorted((ROOT / "agents").rglob("*.md")):
-        problems += build_zip.frontmatter_problems(p, False)
-    return problems
+    return build_zip.upload_problems()
 
 
 def check_lint(_files):

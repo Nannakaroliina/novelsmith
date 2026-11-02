@@ -55,6 +55,23 @@ class ProjectFileChecks(unittest.TestCase):
         self.assertIn("scripts/server.key: looks like a secret file", problems)
         self.assertEqual(check.check_secrets([self.file("README.md", "Set it to sk-ant-... from the console.\n")]), [])
 
+    def test_every_credential_format_is_caught_and_a_near_miss_is_not(self):
+        # Built from pieces so this file does not trip the check itself.
+        cases = {
+            "private key": ("-----BEGIN " + "RSA PRIVATE KEY-----", "-----BEGIN " + "PUBLIC KEY-----"),
+            "AWS access key": ("AKIA" + "Q" * 16, "AKIA" + "Q" * 15),
+            "GitHub token": ("gh" + "p_" + "A" * 36, "gh" + "p_" + "A" * 35),
+            "Anthropic API key": ("sk-" + "ant-" + "a" * 30, "sk-" + "ant-" + "a" * 29),
+            "OpenAI API key": ("sk-" + "proj-" + "a" * 40, "sk-" + "proj-" + "a" * 39),
+            "Google API key": ("AI" + "za" + "A" * 35, "AI" + "za" + "A" * 34),
+            "Slack token": ("xo" + "xb-" + "1" * 10, "xo" + "xb-" + "1" * 9),
+        }
+        for label, (real, near_miss) in cases.items():
+            with self.subTest(label=label):
+                found = check.check_secrets([self.file("docs/real.md", f"value: {real}\n")])
+                self.assertTrue(any(f": {label} (" in p for p in found), found)
+                self.assertEqual(check.check_secrets([self.file("docs/near.md", f"value: {near_miss} end\n")]), [])
+
 
 if __name__ == "__main__":
     unittest.main()
