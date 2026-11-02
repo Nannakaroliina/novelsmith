@@ -86,6 +86,8 @@ SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "LSP", "NotebookRead", "TodoWrite", 
 YAML_BREAKS = re.compile("[\x85\u2028\u2029]")  # line breaks to YAML that the guard's line view does not split on
 PYTHONS = {"python3", "python"}
 DEADLINE = 6.0
+WINDOWS = os.name == "nt"  # only Windows has junctions
+JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)  # a junction's reparse tag
 MAX_CHARS = 1_000_000
 MAX_LINE = 20_000
 SHELL_META = re.compile(r"[;&|<>$`\\\n\r(){}\[\]*?!~#]")
@@ -233,8 +235,10 @@ def is_link(path):
         return True
     if hasattr(os.path, "isjunction"):
         return os.path.isjunction(path)
+    if not WINDOWS:
+        return False
     try:  # Python before 3.12
-        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        return os.lstat(path).st_reparse_tag == JUNCTION_TAG
     except (OSError, ValueError, AttributeError):
         return False
 
@@ -245,6 +249,14 @@ def link_target(path):
     if to.startswith("\\\\?\\UNC\\"):
         return "\\\\" + to[8:]
     return to[4:] if to.startswith("\\\\?\\") else to
+
+
+def is_junction_entry(entry):
+    """True for an os.scandir entry that is a Windows junction (it lists as a folder): its reparse tag, which the
+    listing already holds on Windows (what DirEntry.is_junction reads from Python 3.12), so no extra system call."""
+    if not WINDOWS:
+        return False
+    return getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", 0) == JUNCTION_TAG
 
 
 def special(path, book_root):
@@ -361,8 +373,7 @@ def through_link(paths, book_root, limit=5000, budget=3.0):
             try:
                 linked_here = entry.is_symlink()
                 is_dir = not linked_here and entry.is_dir(follow_symlinks=False)
-                # a Windows junction lists as a folder; DirEntry.is_junction is new in Python 3.12
-                if is_dir and (entry.is_junction() if hasattr(entry, "is_junction") else is_link(entry.path)):
+                if is_dir and is_junction_entry(entry):
                     linked_here, is_dir = True, False
             except OSError as error:
                 problem = unreadable(entry.path, via, error)

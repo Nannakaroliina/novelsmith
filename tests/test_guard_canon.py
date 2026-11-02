@@ -1494,19 +1494,20 @@ class GuardCanon(unittest.TestCase):
                 self.assertEqual(g.link_target("x"), meant)
 
     def test_the_link_walk_counts_a_windows_junction(self):
-        # how Windows lists a junction: not a symlink, a folder; DirEntry.is_junction only from Python 3.12
+        # how Windows lists a junction: not a symlink, a folder, with the junction's reparse tag in its own stat
+        import stat
+        from types import SimpleNamespace
         series = self._shared_bible()
         guard = guard_module()
         shared = str(self.book / "bible/world/shared")
+        stat_calls = []
 
-        def listing(with_is_junction):
+        def listing():
             class Junction:
                 def __init__(self, entry):
                     self._entry = entry
 
                 def __getattr__(self, name):
-                    if name == "is_junction" and not with_is_junction:
-                        raise AttributeError(name)
                     return getattr(self._entry, name)
 
                 def is_symlink(self):
@@ -1515,8 +1516,10 @@ class GuardCanon(unittest.TestCase):
                 def is_dir(self, follow_symlinks=True):
                     return True if self._entry.path == shared else self._entry.is_dir(follow_symlinks=follow_symlinks)
 
-            if with_is_junction:
-                Junction.is_junction = lambda self: self._entry.path == shared
+                def stat(self, follow_symlinks=True):
+                    stat_calls.append(self._entry.path)
+                    tag = guard.JUNCTION_TAG if self._entry.path == shared else 0
+                    return SimpleNamespace(st_mode=stat.S_IFDIR, st_reparse_tag=tag)
 
             class Listing:
                 def __init__(self, folder):
@@ -1530,12 +1533,17 @@ class GuardCanon(unittest.TestCase):
             return Listing
 
         real_scandir = os.scandir
-        for with_is_junction in (True, False):
-            with self.subTest(with_is_junction=with_is_junction):
-                guard.os.scandir = listing(with_is_junction)
+        for windows in (True, False):
+            with self.subTest(windows=windows):
+                guard.os.scandir, guard.WINDOWS = listing(), windows
+                stat_calls.clear()
+                guard.is_link = lambda p: stat_calls.append(p)  # the walk reads the listing, never is_link
                 try:
-                    self.assertEqual(guard.through_link((series / "harbour.md",), self.book),
-                                     ("bible/world/shared/harbour.md",))
+                    found = guard.through_link((series / "harbour.md",), self.book)
+                    if not windows:  # no junctions to look for, so no extra call per folder
+                        self.assertEqual(stat_calls, [])
+                        continue
+                    self.assertEqual(found, ("bible/world/shared/harbour.md",))
                     # so a write by its real location is the book file: denied to subagents, checked for the author
                     self.assertEqual(guard.target(str(series / "harbour.md"), self.project, self.book)[1:],
                                      ("bible/world/shared/harbour.md", "real"))
