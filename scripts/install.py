@@ -57,12 +57,18 @@ def check_home(home):
                  f"of its own (leave out --dir to use {default_home()})")
 
 
-def check_project_folder(scope, cwd):
-    """--scope project/local installs for the folder this runs in, which must be the writing project."""
+def check_project_folder(scope, cwd, uninstall=False):
+    """--scope project/local acts on the folder this runs in, which must be the writing project."""
     if scope != "user" and (cwd == ROOT or ROOT in cwd.parents):
-        sys.exit(f"install: --scope {scope} installs for the folder you run this in, and that is the plugin "
+        sys.exit(f"install: --scope {scope} acts on the folder you run this in, and that is the plugin "
                  f"folder. Open a terminal in your writing folder and run:\n"
-                 f"    python3 \"{ROOT / 'scripts' / 'install.py'}\" --scope {scope}")
+                 f"    {rerun_command(scope, uninstall)}")
+
+
+def rerun_command(scope, uninstall=False):
+    """This installer's command line, to run from another folder: `py` on Windows, as python.org installs it."""
+    python = "py" if sys.platform == "win32" else "python3"
+    return f"{python} \"{ROOT / 'scripts' / 'install.py'}\"{' --uninstall' if uninstall else ''} --scope {scope}"
 
 
 def is_ours(folder):
@@ -103,6 +109,9 @@ def delete_copy(folder):
 
 def remove_copy(folder):
     if folder.exists() or folder.is_symlink():
+        if folder.is_dir() and not folder.is_symlink() and not any(folder.iterdir()):
+            folder.rmdir()  # an empty folder, such as one left when only the final rmdir failed
+            return
         if not is_ours(folder):
             sys.exit(f"install: {folder} exists and was not made by this installer (it has no {MARKER} file); "
                      "nothing was deleted. Choose another --dir.")
@@ -167,9 +176,33 @@ class Claude:
                 return m.get("path") or m.get("installLocation") or ""
         return None
 
-    def installed_scopes(self):
-        """The scopes novelsmith is installed in, as Claude Code sees them from the current folder."""
-        return {p.get("scope") for p in self.json("plugin", "list") if p.get("id") == PLUGIN_ID}
+    def installs(self):
+        """novelsmith's installs as (scope, project folder): Claude Code lists every project's project and
+        local installs, wherever this runs, with the folder in projectPath (None for user scope)."""
+        return [(p.get("scope"), p.get("projectPath")) for p in self.json("plugin", "list") if p.get("id") == PLUGIN_ID]
+
+
+def _same_folder(path, cwd):
+    try:
+        return Path(path).resolve() == cwd
+    except (OSError, RuntimeError):
+        return False
+
+
+def scopes_here(installs, cwd):
+    """The scopes that belong to this folder: user, and project or local installs made here. An entry
+    without a projectPath (an older Claude Code) counts as here, as that CLI only listed this folder's."""
+    return {s for s, project in installs if s == "user" or not project or _same_folder(project, cwd)}
+
+
+def other_projects(installs, cwd):
+    """(scope, folder) of project and local installs made in other folders."""
+    return sorted({(s, project) for s, project in installs
+                   if s != "user" and project and not _same_folder(project, cwd)})
+
+
+def describe(installs):
+    return "; ".join(s if s == "user" else f"{s} in {project}" for s, project in sorted(installs, key=str))
 
 
 def find_claude():
@@ -182,53 +215,81 @@ def find_claude():
 
 
 def install(home, scope):
+    cwd = Path.cwd().resolve()
     check_home(home)
-    check_project_folder(scope, Path.cwd().resolve())
+    check_project_folder(scope, cwd)
     claude = find_claude()
     count = stage(home)
     print(f"Copied {count} plugin files to {home}")
     scopes = {scope}
     registered = claude.marketplace_path()
-    if registered is not None and (not registered or Path(registered).resolve() != home):
-        # Removing a marketplace uninstalls its plugins everywhere, so reinstall where it was.
-        scopes |= claude.installed_scopes()
+    old_copy = Path(registered).resolve() if registered else None
+    if registered is not None and old_copy != home:
+        # Removing a marketplace uninstalls its plugins everywhere. Reinstall what belongs to this folder;
+        # another project's install can only be made again from that project's folder.
+        installs = claude.installs()
+        scopes |= scopes_here(installs, cwd)
         print(f"The {NAME} marketplace pointed at {registered or 'another folder'}; pointing it at {home} instead "
               f"and reinstalling for: {', '.join(sorted(scopes))}.")
+        elsewhere = other_projects(installs, cwd)
+        if elsewhere:
+            print("This also removes novelsmith from other projects. To get it back there, open a terminal in each "
+                  "folder and run the command shown:")
+            for s, project in elsewhere:
+                print(f"    {project}:  {rerun_command(s)}")
         claude.run("plugin", "marketplace", "remove", NAME)
         registered = None
     if registered is None:
         claude.run("plugin", "marketplace", "add", str(home))
     else:
         claude.run("plugin", "marketplace", "update", NAME)
-    installed = claude.installed_scopes()
+    installed = scopes_here(claude.installs(), cwd)
     for s in sorted(scopes):
         claude.run("plugin", "update" if s in installed else "install", PLUGIN_ID, "--scope", s)
-    where = "every project" if scope == "user" else f"the project in {Path.cwd()}"
+    if old_copy and old_copy != home and is_ours(old_copy):
+        remove_copy(old_copy)
+        print(f"Deleted the previous copy at {old_copy}.")
+    where = "every project" if scope == "user" else f"the project in {cwd}"
     print(f"\nNovelsmith is installed for {where}. Open a terminal in your writing folder (the one that holds or "
           f"will hold book/), start `claude`, and run /novelsmith:doctor, then /novelsmith:novel-start.\n"
           f"Already running Claude Code? Run /reload-plugins there or start a new session.")
 
 
 def uninstall(home, scope):
+    cwd = Path.cwd().resolve()
     check_home(home)
+    check_project_folder(scope, cwd, uninstall=True)
     claude = find_claude()
-    scopes = claude.installed_scopes()
-    if scope in scopes:
+    installs = claude.installs()
+    if scope in scopes_here(installs, cwd):
         claude.run("plugin", "uninstall", PLUGIN_ID, "--scope", scope)
-    elif scopes:
-        sys.exit(f"install: {PLUGIN_ID} is not installed in {scope} scope (it is in: {', '.join(sorted(scopes))}); "
-                 f"nothing was removed. Pass --scope to choose which one to uninstall.")
-    remaining = claude.installed_scopes()
+    elif installs:
+        hint = ""
+        for s, project in other_projects(installs, cwd):
+            if s == scope:
+                hint = f" To remove it there, open a terminal in {project} and run:\n    {rerun_command(s, True)}"
+                break
+        sys.exit(f"install: {PLUGIN_ID} is not installed in {scope} scope for {cwd} (it is installed: "
+                 f"{describe(installs)}); nothing was removed.{hint}")
+    remaining = claude.installs()
     if remaining:
-        print(f"Uninstalled from {scope} scope. Still installed in: {', '.join(sorted(remaining))}, so the "
-              f"{NAME} marketplace and {home} stay.")
+        print(f"Uninstalled from {scope} scope. Still installed: {describe(remaining)}; the {NAME} marketplace "
+              f"and its copy of the plugin stay.")
         return
-    if claude.marketplace_path() is not None:
-        print(f"Removing the {NAME} marketplace; any other project that installed novelsmith with --scope project "
-              "loses it too.")
+    registered = claude.marketplace_path()
+    copies = {home} | ({Path(registered).resolve()} if registered else set())
+    removed = []
+    if registered is not None:
         claude.run("plugin", "marketplace", "remove", NAME)
-    remove_copy(home)
-    print("Removed. Your book/ folders are untouched.")
+        removed.append(f"the {NAME} marketplace")
+    for copy in sorted(copies):
+        if copy.exists() and (copy == home or is_ours(copy)):
+            remove_copy(copy)
+            removed.append(str(copy))
+    if removed or scope in scopes_here(installs, cwd):
+        print(f"Removed {', '.join(removed) or 'novelsmith'}. Your book/ folders are untouched.")
+    else:
+        print(f"novelsmith was not installed in Claude Code and {home} does not exist; nothing to remove.")
 
 
 def main():

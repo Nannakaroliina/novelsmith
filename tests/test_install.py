@@ -15,23 +15,53 @@ spec.loader.exec_module(install)
 
 
 class FakeClaude:
-    """Stands in for the `claude` CLI: scopes it reports, and every command run."""
+    """Stands in for the `claude` CLI as it behaves: every project's installs are listed wherever it runs,
+    project and local ones with their folder; removing the marketplace uninstalls them all."""
 
-    def __init__(self, scopes, marketplace="somewhere"):
-        self.scopes, self.marketplace, self.ran = set(scopes), marketplace, []
+    def __init__(self, installs=(), marketplace=None):
+        self.installs_, self.marketplace, self.ran = set(installs), marketplace, []
+
+    def here(self, scope):
+        return (scope, None if scope == "user" else str(Path.cwd().resolve()))
 
     def run(self, *args):
         self.ran.append(args)
         if args[:2] == ("plugin", "uninstall"):
-            self.scopes.discard(args[-1])
-        if args[:3] == ("plugin", "marketplace", "remove"):
-            self.scopes, self.marketplace = set(), None
+            self.installs_.discard(self.here(args[-1]))
+        elif args[:2] == ("plugin", "install"):
+            self.installs_.add(self.here(args[-1]))
+        elif args[:3] == ("plugin", "marketplace", "add"):
+            self.marketplace = args[3]
+        elif args[:3] == ("plugin", "marketplace", "remove"):
+            self.installs_, self.marketplace = set(), None
 
-    def installed_scopes(self):
-        return set(self.scopes)
+    def installs(self):
+        return sorted(self.installs_, key=str)
 
     def marketplace_path(self):
         return self.marketplace
+
+
+class InFolder(unittest.TestCase):
+    """Runs each test in a fresh temp folder (the 'writing folder'), with an installed-copy home next to it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name).resolve()
+        self.writing, self.other = self.base / "writing", self.base / "other-book"
+        self.writing.mkdir()
+        self.other.mkdir()
+        self.home = self.base / "plugin"
+        old_cwd = os.getcwd()
+        os.chdir(self.writing)
+        self.addCleanup(os.chdir, old_cwd)
+        self.addCleanup(self.tmp.cleanup)
+
+    def call(self, fn, claude, *args):
+        out = io.StringIO()
+        with mock.patch.object(install, "find_claude", return_value=claude), redirect_stdout(out):
+            fn(*args)
+        return out.getvalue()
 
 
 class InstalledCopy(unittest.TestCase):
@@ -101,6 +131,12 @@ class InstalledCopy(unittest.TestCase):
         install.remove_copy(self.dest)
         self.assertFalse(self.dest.exists())
 
+    def test_an_empty_leftover_folder_does_not_block_the_next_run(self):
+        (self.base / "plugin.old").mkdir()  # what a failed final rmdir leaves behind
+        install.stage(self.dest)
+        self.assertFalse((self.base / "plugin.old").exists())
+        self.assertTrue(install.is_ours(self.dest))
+
     def test_project_scope_from_the_plugin_folder_is_refused(self):
         for cwd in (ROOT, ROOT / "scripts"):
             with self.subTest(cwd=cwd):
@@ -110,38 +146,98 @@ class InstalledCopy(unittest.TestCase):
         install.check_project_folder("project", self.base)
 
 
-class Uninstall(unittest.TestCase):
+class Uninstall(InFolder):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name).resolve() / "plugin"
+        super().setUp()
         install.stage(self.home)
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
     def uninstall(self, claude, scope):
-        with mock.patch.object(install, "find_claude", return_value=claude), redirect_stdout(io.StringIO()):
-            install.uninstall(self.home, scope)
+        return self.call(install.uninstall, claude, self.home, scope)
 
     def test_other_scopes_keep_the_marketplace_and_copy(self):
-        claude = FakeClaude({"user", "project"})
+        claude = FakeClaude({("user", None), ("project", str(self.writing))}, str(self.home))
         self.uninstall(claude, "project")
         self.assertEqual(claude.ran, [("plugin", "uninstall", install.PLUGIN_ID, "--scope", "project")])
         self.assertTrue(install.is_ours(self.home))
 
-    def test_a_scope_it_is_not_in_removes_nothing(self):
-        claude = FakeClaude({"user"})
-        with self.assertRaises(SystemExit):
+    def test_another_projects_install_is_left_alone_and_named(self):
+        claude = FakeClaude({("project", str(self.other))}, str(self.home))
+        with self.assertRaises(SystemExit) as stop:
             self.uninstall(claude, "project")
+        self.assertIn(str(self.other), str(stop.exception.code))
+        self.assertIn("--uninstall --scope project", str(stop.exception.code))
         self.assertEqual(claude.ran, [])
         self.assertTrue(install.is_ours(self.home))
 
+    def test_project_scope_from_the_plugin_folder_is_refused_before_anything_runs(self):
+        claude = FakeClaude({("project", str(self.writing))}, str(self.home))
+        os.chdir(ROOT)
+        with self.assertRaises(SystemExit) as stop:
+            self.uninstall(claude, "project")
+        self.assertIn("--uninstall --scope project", str(stop.exception.code))
+        self.assertEqual(claude.ran, [])
+
     def test_the_last_scope_removes_marketplace_and_copy(self):
-        claude = FakeClaude({"user"})
-        self.uninstall(claude, "user")
+        claude = FakeClaude({("user", None)}, str(self.home))
+        out = self.uninstall(claude, "user")
         self.assertEqual(claude.ran, [("plugin", "uninstall", install.PLUGIN_ID, "--scope", "user"),
                                       ("plugin", "marketplace", "remove", install.NAME)])
         self.assertFalse(self.home.exists())
+        self.assertIn("Removed", out)
+
+    def test_a_copy_made_with_dir_is_removed_too(self):
+        elsewhere = self.base / "custom" / "plugin"
+        install.stage(elsewhere)
+        claude = FakeClaude({("user", None)}, str(elsewhere))
+        self.uninstall(claude, "user")
+        self.assertFalse(elsewhere.exists())
+        self.assertFalse(self.home.exists())
+
+    def test_nothing_installed_says_so(self):
+        install.remove_copy(self.home)
+        out = self.uninstall(FakeClaude(), "user")
+        self.assertIn("nothing to remove", out)
+
+
+class Install(InFolder):
+    def install(self, claude, scope="user"):
+        return self.call(install.install, claude, self.home, scope)
+
+    def test_first_install_adds_the_marketplace(self):
+        claude = FakeClaude()
+        self.install(claude)
+        self.assertEqual(claude.ran, [("plugin", "marketplace", "add", str(self.home)),
+                                      ("plugin", "install", install.PLUGIN_ID, "--scope", "user")])
+
+    def test_upgrade_in_place_updates(self):
+        claude = FakeClaude({("user", None)}, str(self.home))
+        install.stage(self.home)
+        self.install(claude)
+        self.assertEqual(claude.ran, [("plugin", "marketplace", "update", install.NAME),
+                                      ("plugin", "update", install.PLUGIN_ID, "--scope", "user")])
+
+    def test_repointing_reinstalls_this_folders_scopes_only_and_names_other_projects(self):
+        old = self.base / "old" / "plugin"
+        install.stage(old)
+        claude = FakeClaude({("user", None), ("local", str(self.writing)), ("project", str(self.other))}, str(old))
+        out = self.install(claude)
+        self.assertEqual(claude.ran, [("plugin", "marketplace", "remove", install.NAME),
+                                      ("plugin", "marketplace", "add", str(self.home)),
+                                      ("plugin", "install", install.PLUGIN_ID, "--scope", "local"),
+                                      ("plugin", "install", install.PLUGIN_ID, "--scope", "user")])
+        self.assertNotIn(("project", str(self.writing)), claude.installs_)  # no project install made here
+        self.assertIn(str(self.other), out)
+        self.assertFalse(old.exists())  # the previous marked copy is cleaned up
+        self.assertTrue(install.is_ours(self.home))
+
+    def test_a_marketplace_at_a_plugin_clone_is_repointed_but_the_clone_kept(self):
+        clone = self.base / "novelsmith-main"
+        (clone / ".claude-plugin").mkdir(parents=True)
+        (clone / ".claude-plugin/plugin.json").write_text(json.dumps({"name": "novelsmith"}), encoding="utf-8")
+        claude = FakeClaude({("user", None)}, str(clone))
+        self.install(claude)
+        self.assertTrue((clone / ".claude-plugin/plugin.json").exists())
+        self.assertEqual(claude.marketplace, str(self.home))
 
 
 if __name__ == "__main__":

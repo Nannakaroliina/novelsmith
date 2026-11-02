@@ -35,9 +35,9 @@ What Cowork changes:
 
    It copies the plugin's own files (the same ones the Cowork zip holds) to a folder of their own (`~/Library/Application Support/novelsmith/plugin` on a Mac, `%LOCALAPPDATA%\novelsmith\plugin` on Windows, `~/.local/share/novelsmith/plugin` on Linux), registers that folder as the `novelsmith` plugin marketplace and installs the plugin for every project. You can delete the downloaded folder afterwards.
 
-   To install it for one writing project only, run the installer from that project's folder instead, giving its full path: `python3 "/path/to/novelsmith/scripts/install.py" --scope project`. Pass the same `--scope` when you upgrade or uninstall.
+   To install it for one writing project only, open a terminal in that project's folder and run the installer by its full path: `python3 "/path/to/novelsmith/scripts/install.py" --scope project` (on Windows, `py "C:\path\to\novelsmith\scripts\install.py" --scope project`). Upgrade and uninstall it the same way, from the same folder, with the same `--scope`.
 
-   To uninstall, run the installer with `--uninstall` from a plugin folder (download it again if you deleted it). Without one, run `claude plugin uninstall novelsmith@novelsmith` and `claude plugin marketplace remove novelsmith`, then delete the folder named above.
+   To uninstall, run the installer with `--uninstall` (for a project install, from that project's folder as above). If you deleted the plugin folder, download it again, or run `claude plugin uninstall novelsmith@novelsmith` and `claude plugin marketplace remove novelsmith`, then delete the folder named above. Your `book/` is never touched.
 3. Open a terminal in the folder that holds (or will hold) your `book/`, your writing project, not the plugin folder, start `claude`, and run `/novelsmith:doctor`, then `/novelsmith:novel-start`.
 
 Or, without installing, start Claude Code with the plugin for one session: `claude --plugin-dir "/path/to/novelsmith"`.
@@ -144,5 +144,5 @@ Run `/novelsmith:doctor` first and include its table. Report problems to the plu
 
 - **Phase 3** — `build-context-pack.py`, `scene-drafter`, `lint-scene.sh` with per-author baseline, `extract-facts.py`, `continuity-editor`, `SessionStart` status hook.
 - **Phase 4** — blind critique panel (reader personas, line editor, genre specialist, de-AI editor), pairwise judge, `revise`, `SubagentStop` output check.
-- **Phase 5** — remaining genre references, `book-metrics.py`, optional workflows, marketplace.json.
+- **Phase 5** — remaining genre references, `book-metrics.py`, optional workflows, a published marketplace listing.
 - **Phase 6** — calibrate on a Finnish crime novella; promote recurring hand-edits into rules.
