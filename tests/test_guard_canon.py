@@ -1493,6 +1493,55 @@ class GuardCanon(unittest.TestCase):
             with mock.patch.object(g.os, "readlink", lambda p, given=given: given):
                 self.assertEqual(g.link_target("x"), meant)
 
+    def test_the_link_walk_counts_a_windows_junction(self):
+        # how Windows lists a junction: not a symlink, a folder; DirEntry.is_junction only from Python 3.12
+        series = self._shared_bible()
+        guard = guard_module()
+        shared = str(self.book / "bible/world/shared")
+
+        def listing(with_is_junction):
+            class Junction:
+                def __init__(self, entry):
+                    self._entry = entry
+
+                def __getattr__(self, name):
+                    if name == "is_junction" and not with_is_junction:
+                        raise AttributeError(name)
+                    return getattr(self._entry, name)
+
+                def is_symlink(self):
+                    return False if self._entry.path == shared else self._entry.is_symlink()
+
+                def is_dir(self, follow_symlinks=True):
+                    return True if self._entry.path == shared else self._entry.is_dir(follow_symlinks=follow_symlinks)
+
+            if with_is_junction:
+                Junction.is_junction = lambda self: self._entry.path == shared
+
+            class Listing:
+                def __init__(self, folder):
+                    self._entries = [Junction(e) for e in real_scandir(folder)]
+
+                def __enter__(self):
+                    return iter(self._entries)
+
+                def __exit__(self, *exc):
+                    return False
+            return Listing
+
+        real_scandir = os.scandir
+        for with_is_junction in (True, False):
+            with self.subTest(with_is_junction=with_is_junction):
+                guard.os.scandir = listing(with_is_junction)
+                try:
+                    self.assertEqual(guard.through_link((series / "harbour.md",), self.book),
+                                     ("bible/world/shared/harbour.md",))
+                    # so a write by its real location is the book file: denied to subagents, checked for the author
+                    self.assertEqual(guard.target(str(series / "harbour.md"), self.project, self.book)[1:],
+                                     ("bible/world/shared/harbour.md", "real"))
+                finally:
+                    guard.os.scandir = real_scandir
+
     def test_a_hard_link_to_scenes_or_premise_keeps_its_protection(self):
         waiver = dict(old_string="  waivers: {}", new_string='  waivers: {subplot: "x"}')
         genre = dict(old_string="- Base genre: mystery", new_string="- Base genre: literary")

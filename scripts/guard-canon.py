@@ -359,8 +359,11 @@ def through_link(paths, book_root, limit=5000, budget=3.0):
             rel = f"{rel_dir}/{fold(entry.name)}" if rel_dir else fold(entry.name)
             shown = f"{shown_dir}/{entry.name}"
             try:
-                linked_here = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
+                linked_here = entry.is_symlink()
                 is_dir = not linked_here and entry.is_dir(follow_symlinks=False)
+                # a Windows junction lists as a folder; DirEntry.is_junction is new in Python 3.12
+                if is_dir and (entry.is_junction() if hasattr(entry, "is_junction") else is_link(entry.path)):
+                    linked_here, is_dir = True, False
             except OSError as error:
                 problem = unreadable(entry.path, via, error)
                 if problem is None:
