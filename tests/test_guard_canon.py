@@ -1462,6 +1462,50 @@ class GuardCanon(unittest.TestCase):
             self.assertEqual(g.special((outline / "scenes-v3.yaml").resolve(), self.book), g.SCENES)
             self.assertEqual(g.special((self.book / "bible/premise.md").resolve(), self.book), g.PREMISE)
 
+    def test_a_windows_junction_counts_as_a_link(self):
+        from unittest import mock
+        series = self._shared_bible()
+        g = guard_module()
+        shared = self.book / "bible/world/shared"
+        real_islink, real_readlink = os.path.islink, os.readlink
+
+        def junction(on):  # shared as Windows shows a junction: islink False, isjunction as given, \\?\ target
+            return (mock.patch.object(g.os.path, "islink", lambda p: False if Path(p) == shared else real_islink(p)),
+                    mock.patch.object(g.os.path, "isjunction", lambda p: on and Path(p) == shared, create=True),
+                    mock.patch.object(g.os, "readlink", lambda p: ("\\\\?\\" if Path(p) == shared else "")
+                                      + real_readlink(p)))
+
+        parts = ("bible", "world", "shared", "harbour.md")
+        self.assertEqual(g.target("book/" + "/".join(parts), self.project, self.book)[0],
+                         (series / "harbour.md").resolve())  # the system follows it out of the book
+        a, b, c = junction(True)
+        with a, b, c:
+            self.assertEqual(g.leaving_link(parts, self.book), "bible/world/shared/harbour.md")
+        # a link the walk cannot follow, though the system does: cannot tell, and says so
+        a, b, c = junction(False)
+        with a, b, c:
+            rel = g.leaving_link(parts, self.book)
+        self.assertIsInstance(rel, g.CannotTell)
+        self.assertIn("a link the canon guard cannot follow", rel.why)
+        # a junction's target as os.readlink gives it on Windows
+        for given, meant in (("\\\\?\\C:\\series", "C:\\series"), ("\\\\?\\UNC\\nas\\series", "\\\\nas\\series"),
+                             ("../series", "../series")):
+            with mock.patch.object(g.os, "readlink", lambda p, given=given: given):
+                self.assertEqual(g.link_target("x"), meant)
+
+    def test_a_hard_link_to_scenes_or_premise_keeps_its_protection(self):
+        waiver = dict(old_string="  waivers: {}", new_string='  waivers: {subplot: "x"}')
+        genre = dict(old_string="- Base genre: mystery", new_string="- Base genre: literary")
+        proposals = self.book / "proposals"
+        proposals.mkdir(exist_ok=True)
+        os.link(self.book / "outline/scenes.yaml", proposals / "s.yaml")
+        os.link(self.book / "bible/premise.md", proposals / "p.md")
+        sa = "novelsmith:story-architect"
+        self.assertEqual(self.hook("Edit", "book/proposals/s.yaml", agent=sa, **waiver), "deny")
+        self.assertEqual(self.hook("Edit", "book/proposals/s.yaml", **waiver), "ask")
+        self.assertEqual(self.hook("Edit", "book/proposals/p.md", agent=sa, **genre), "deny")
+        self.assertEqual(self.hook("Edit", "book/proposals/p.md", **genre), "ask")
+
     def test_the_fallback_check_knows_linked_files(self):
         series = self._shared_bible()
         g = guard_module()

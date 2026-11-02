@@ -181,10 +181,10 @@ def target(raw, cwd, book_root, budget=3.0):
 def leaving_link(parts, book_root):
     """The book path of a file written as book/<parts> that leaves the book through a symlink: the real place in
     book/ of the link that leads out, plus the rest of the path after it, so links between book folders on the way
-    change nothing. Links are resolved one part at a time, as the system does, so a file link, a link into a linked
-    folder and a target relative to another link are all followed. A CannotTell when the links loop, or the path
-    leaves the book some way no book path names (climbing back out of the linked folder, or through a link outside
-    the book)."""
+    change nothing. Links (Windows junctions too) are resolved one part at a time, as the system does, so a file
+    link, a link into a linked folder and a target relative to another link are all followed. A CannotTell when the
+    links loop, when the path leaves the book some way no book path names (climbing back out of the linked folder,
+    or through a link outside the book), or when it never leaves by the links this walk can follow."""
     shown = "book/" + "/".join(parts)
     cur = book_root.resolve()
     todo = [(name, None) for name in reversed(parts)]  # (part, the in-book link whose target it comes from)
@@ -193,12 +193,12 @@ def leaving_link(parts, book_root):
         name, via = todo.pop()
         if name == "..":
             nxt = cur.parent
-        elif os.path.islink(cur / name):
+        elif is_link(cur / name):
             hops += 1
             if hops > 40:
                 return CannotTell(f"the links on the way to {shown} loop", "remove the link that loops")
             try:
-                link = Path(os.readlink(cur / name))
+                link = Path(link_target(cur / name))
             except (OSError, ValueError):
                 return CannotTell(f"it cannot read the link {cur / name}", f"make {cur / name} readable")
             if inside:
@@ -215,12 +215,36 @@ def leaving_link(parts, book_root):
         if was and not inside:
             out = via
     fix = "point a link in book/ straight at the folder outside the book that holds the file"
-    if inside or out is None:
+    if inside:
+        return CannotTell(f"{shown} leaves the book through a link the canon guard cannot follow",
+                          "replace the links on that path with ordinary symbolic links")
+    if out is None:
         return CannotTell(f"{shown} leaves the book only through a link outside it", fix)
     link_rel, rest = out
     if ".." in rest:
         return CannotTell(f"{shown} climbs back out of the folder the link book/{link_rel} leads to", fix)
     return "/".join([link_rel, *(fold(n) for n in rest)])
+
+
+def is_link(path):
+    """True for a symlink or a Windows directory junction: os.path.islink does not count a junction, yet the system
+    follows it."""
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, "isjunction"):
+        return os.path.isjunction(path)
+    try:  # Python before 3.12
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def link_target(path):
+    """os.readlink, without the \\\\?\\ prefix Windows puts on a junction's target."""
+    to = os.readlink(path)
+    if to.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + to[8:]
+    return to[4:] if to.startswith("\\\\?\\") else to
 
 
 def special(path, book_root):
@@ -335,14 +359,14 @@ def through_link(paths, book_root, limit=5000, budget=3.0):
             rel = f"{rel_dir}/{fold(entry.name)}" if rel_dir else fold(entry.name)
             shown = f"{shown_dir}/{entry.name}"
             try:
-                is_link = entry.is_symlink()
-                is_dir = not is_link and entry.is_dir(follow_symlinks=False)
+                linked_here = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
+                is_dir = not linked_here and entry.is_dir(follow_symlinks=False)
             except OSError as error:
                 problem = unreadable(entry.path, via, error)
                 if problem is None:
                     continue
                 return problem
-            if not (is_link or is_dir):
+            if not (linked_here or is_dir):
                 continue
             counted += 1
             if counted > limit:
