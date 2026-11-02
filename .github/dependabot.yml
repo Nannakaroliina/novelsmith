@@ -1,0 +1,29 @@
+# Version updates for the CI actions (pinned by commit, with the tag in a comment) and the
+# development tools in requirements-dev.txt. The plugin itself has no dependencies.
+# A release must be a week old before Dependabot proposes it, so a hijacked release is
+# usually caught and pulled before it reaches this repository.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      dev-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: deps

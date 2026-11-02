@@ -1,0 +1,5 @@
+# Development and CI tools only; the plugin itself needs nothing beyond the Python standard library.
+# The Check workflow installs each with `pip install -c requirements-dev.txt <name>`, so Dependabot
+# can keep these pins current. Locally: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+ruff==0.17.3
+PyYAML==6.0.3
