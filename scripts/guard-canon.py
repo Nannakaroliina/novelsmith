@@ -159,7 +159,7 @@ def target(raw, cwd, book_root, budget=3.0):
     book/ is judged by where it really is there, so a link between two book folders changes nothing (how is "").
     A file kept outside the book but reached through a symlink in book/ (a shared series bible) is linked: how is
     "through" when it was written by its path through that link, and "real" when it was written by its own location,
-    which only a walk of book/'s links can tell; that walk may answer a CannotTell. The path is None outside the
+    which only a walk of book/'s links can tell; either may answer a CannotTell. The path is None outside the
     book. scenes.yaml and premise.md are known by what file they are, whatever path reaches them."""
     written = Path(os.path.normpath(os.path.join(str(cwd), os.path.expanduser(raw))))
     path = written.resolve()
@@ -168,7 +168,7 @@ def target(raw, cwd, book_root, budget=3.0):
         return path, special(path, book_root) or rel, ""
     root = Path(os.path.normpath(str(book_root)))
     if book_relative(written, root) is not None:
-        rel = leaving_link(written.parts[len(root.parts):], book_root) or book_relative(written, root)
+        rel = leaving_link(written.parts[len(root.parts):], book_root)
         return path, special(path, book_root) or rel, "through"
     if not is_book_project(book_root):
         return path, None, ""
@@ -180,37 +180,63 @@ def target(raw, cwd, book_root, budget=3.0):
 
 def leaving_link(parts, book_root):
     """The book path of a file written as book/<parts> that leaves the book through a symlink: the real place in
-    book/ of the link that leads out, plus the rest of the path, so links between book folders on the way change
-    nothing. Links are followed one at a time; None if the path never leaves the book or the links loop."""
-    cur, rel = Path(os.path.normpath(str(book_root))), ""
-    for i, name in enumerate(parts):
-        nxt, nrel = cur / name, f"{rel}/{fold(name)}" if rel else fold(name)
-        for _ in range(40):
+    book/ of the link that leads out, plus the rest of the path after it, so links between book folders on the way
+    change nothing. Links are resolved one part at a time, as the system does, so a file link, a link into a linked
+    folder and a target relative to another link are all followed. A CannotTell when the links loop, or the path
+    leaves the book some way no book path names (climbing back out of the linked folder, or through a link outside
+    the book)."""
+    shown = "book/" + "/".join(parts)
+    cur = book_root.resolve()
+    todo = [(name, None) for name in reversed(parts)]  # (part, the in-book link whose target it comes from)
+    inside, out, hops = True, None, 0
+    while todo:
+        name, via = todo.pop()
+        if name == "..":
+            nxt = cur.parent
+        elif os.path.islink(cur / name):
+            hops += 1
+            if hops > 40:
+                return CannotTell(f"the links on the way to {shown} loop", "remove the link that loops")
             try:
-                if not nxt.is_symlink():
-                    break
-                hop = Path(os.path.normpath(os.path.join(str(nxt.parent), os.readlink(nxt))))
+                link = Path(os.readlink(cur / name))
             except (OSError, ValueError):
-                return None
-            inside = locate(hop, book_root)
-            if inside is None:
-                return "/".join([nrel, *(fold(p) for p in parts[i + 1:])])
-            nxt, nrel = hop, inside
+                return CannotTell(f"it cannot read the link {cur / name}", f"make {cur / name} readable")
+            if inside:
+                base = locate(cur, book_root)
+                via = (f"{base}/{fold(name)}" if base else fold(name), [n for n, _ in reversed(todo)])
+            else:
+                via = None
+            todo.extend((n, via) for n in reversed(link.parts[1:] if link.is_absolute() else link.parts))
+            nxt = Path(link.anchor) if link.is_absolute() else cur
         else:
-            return None
-        cur, rel = nxt, nrel
-    return None
+            nxt = cur / name
+        cur, was = nxt, inside
+        inside = locate(cur, book_root) is not None
+        if was and not inside:
+            out = via
+    fix = "point a link in book/ straight at the folder outside the book that holds the file"
+    if inside or out is None:
+        return CannotTell(f"{shown} leaves the book only through a link outside it", fix)
+    link_rel, rest = out
+    if ".." in rest:
+        return CannotTell(f"{shown} climbs back out of the folder the link book/{link_rel} leads to", fix)
+    return "/".join([link_rel, *(fold(n) for n in rest)])
 
 
 def special(path, book_root):
-    """SCENES or PREMISE when `path` is that very file, however it is reached (a link to a versioned copy), so its
-    waivers and settings stay the author's; else None."""
+    """SCENES or PREMISE when `path` (resolved) is that very file, however it is reached (a link to a versioned
+    copy), so its waivers and settings stay the author's; else None. Matched by where the link really leads, and by
+    file identity where the file system gives one (os.path.samefile would match any two files where it gives none)."""
     for name in (SCENES, PREMISE):
+        known = book_root / name
         try:
-            if os.path.samefile(path, book_root / name):
+            if fold(known.resolve().as_posix()) == fold(path.as_posix()):
                 return name
-        except (OSError, ValueError):
-            pass
+            mine, theirs = os.stat(path), os.stat(known)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if mine.st_ino and (mine.st_dev, mine.st_ino) == (theirs.st_dev, theirs.st_ino):
+            return name
     return None
 
 
@@ -688,6 +714,14 @@ def main(data):
         return 0
     path, rel, how = target(raw, cwd, book_root)
     if isinstance(rel, CannotTell):
+        if how == "through":
+            what = (f"novelsmith: {raw} leaves the book through a link, and the canon guard cannot tell which book "
+                    f"file it is ({rel.why}).")
+            if agent:
+                return decide("deny", f"{what} Subagents may not write it. Report it to the author, with the fix: "
+                                      f"{rel.fix}.")
+            return decide("ask", f"{what} Allow it only if you asked for this change. To end these prompts, "
+                                 f"{rel.fix}.")
         if ours:
             return decide("deny", f"novelsmith: {short} writes only under book/. If {raw} is a book file reached "
                                   f"through a link, write it by its path inside book/.")

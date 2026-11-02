@@ -1390,6 +1390,78 @@ class GuardCanon(unittest.TestCase):
                                     old_string="- Outcome of the climax: exposure on the ice road",
                                     new_string="- Outcome of the climax: exposure on the frozen ice road"))
 
+    def test_links_are_followed_part_by_part(self):
+        series = self._shared_bible()
+        (series / "towns").mkdir()
+        (series / "towns/harbour.md").write_text((series / "harbour.md").read_text(encoding="utf-8"),
+                                                encoding="utf-8")
+        edit = "# Harbour\nFerries run twice a day.\n## ⚓ Anchored\n- The harbour freezes in March.\n"
+        wb, sa = "novelsmith:worldbuilder", "novelsmith:story-architect"
+        proposals, research = self.book / "proposals", self.book / "research"
+        proposals.mkdir(exist_ok=True)
+        research.mkdir()
+        (proposals / "world").symlink_to(Path("../bible/world"))
+        layouts = {
+            # a file link whose target runs through the link that leaves the book
+            "book/proposals/h.md": (proposals / "h.md", "../bible/world/shared/harbour.md"),
+            # a link to a folder inside the linked series bible
+            "book/proposals/towns/harbour.md": (proposals / "towns", "../bible/world/shared/towns"),
+            # a target that runs through another in-book link first
+            "book/research/h.md": (research / "h.md", "../proposals/world/shared/harbour.md"),
+            # an absolute link between book folders, which starts outside the book at /
+            "book/proposals/abs/shared/harbour.md": (proposals / "abs", self.book / "bible/world"),
+        }
+        for spelled, (link, to) in layouts.items():
+            link.symlink_to(Path(to))
+            with self.subTest(spelled=spelled):
+                decision, why = self.hook("Write", spelled, agent=sa, reason=True, content=edit)
+                self.assertEqual(decision, "deny")
+                self.assertIn("book/bible/world/shared/", why)
+                self.assertIsNone(self.hook("Write", spelled, agent=wb, content=edit))
+
+    def test_a_link_that_climbs_out_of_the_linked_folder_cannot_tell(self):
+        self._shared_bible()
+        (self.project / "notes.md").write_text("x\n", encoding="utf-8")
+        (self.book / "proposals").mkdir(exist_ok=True)
+        (self.book / "proposals/up.md").symlink_to(Path("../bible/world/shared/../notes.md"))
+        for agent in ("novelsmith:story-architect", "general-purpose"):
+            with self.subTest(agent=agent):
+                decision, why = self.hook("Write", "book/proposals/up.md", agent=agent, reason=True, content="y")
+                self.assertEqual(decision, "deny")
+                self.assertIn("cannot tell which book file it is", why)
+                self.assertIn("climbs back out of the folder the link book/bible/world/shared leads to", why)
+        self.assertEqual(self.hook("Write", "book/proposals/up.md", content="y"), "ask")
+
+    def test_scenes_kept_outside_the_book_is_known_by_any_link(self):
+        import shutil
+        waiver = dict(old_string="  waivers: {}", new_string='  waivers: {subplot: "x"}')
+        series = self.project / "series-outline"
+        shutil.move(str(self.book / "outline"), str(series))
+        (self.book / "outline").symlink_to(series)
+        (self.book / "proposals").mkdir(exist_ok=True)
+        (self.book / "proposals/s.yaml").symlink_to(series / "scenes.yaml")
+        self.assertEqual(self.hook("Edit", "book/proposals/s.yaml", agent="novelsmith:story-architect", **waiver),
+                         "deny")
+        self.assertEqual(self.hook("Edit", "book/proposals/s.yaml", **waiver), "ask")
+
+    def test_scenes_and_premise_without_file_identities(self):
+        from unittest import mock
+        g = guard_module()
+        real_stat = os.stat
+
+        def no_identity(p, *a, **k):
+            r = real_stat(p, *a, **k)
+            return os.stat_result((r.st_mode, 0, 0, r.st_nlink, r.st_uid, r.st_gid, r.st_size, r.st_atime,
+                                   r.st_mtime, r.st_ctime))
+
+        outline = self.book / "outline"
+        (outline / "scenes.yaml").rename(outline / "scenes-v3.yaml")
+        (outline / "scenes.yaml").symlink_to("scenes-v3.yaml")
+        with mock.patch.object(g.os, "stat", no_identity):
+            self.assertIsNone(g.special((self.book / "bible/style.md").resolve(), self.book))
+            self.assertEqual(g.special((outline / "scenes-v3.yaml").resolve(), self.book), g.SCENES)
+            self.assertEqual(g.special((self.book / "bible/premise.md").resolve(), self.book), g.PREMISE)
+
     def test_the_fallback_check_knows_linked_files(self):
         series = self._shared_bible()
         g = guard_module()
