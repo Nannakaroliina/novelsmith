@@ -57,18 +57,25 @@ def check_home(home):
                  f"of its own (leave out --dir to use {default_home()})")
 
 
-def check_project_folder(scope, cwd, uninstall=False):
+def check_project_folder(scope, cwd, home, uninstall=False):
     """--scope project/local acts on the folder this runs in, which must be the writing project."""
     if scope != "user" and (cwd == ROOT or ROOT in cwd.parents):
         sys.exit(f"install: --scope {scope} acts on the folder you run this in, and that is the plugin "
                  f"folder. Open a terminal in your writing folder and run:\n"
-                 f"    {rerun_command(scope, uninstall)}")
+                 f"    {rerun_command(scope, home, uninstall)}")
 
 
-def rerun_command(scope, uninstall=False):
-    """This installer's command line, to run from another folder: `py` on Windows, as python.org installs it."""
+def rerun_command(scope, home, uninstall=False):
+    """This installer's command line with the same options, to run from another folder (`py` on Windows, as
+    python.org installs it). --dir is kept: without it the next run would move the marketplace back."""
     python = "py" if sys.platform == "win32" else "python3"
-    return f"{python} \"{ROOT / 'scripts' / 'install.py'}\"{' --uninstall' if uninstall else ''} --scope {scope}"
+    parts = [python, f"\"{ROOT / 'scripts' / 'install.py'}\""]
+    if uninstall:
+        parts.append("--uninstall")
+    parts += ["--scope", scope]
+    if home != default_home().expanduser().resolve():
+        parts += ["--dir", f"\"{home}\""]
+    return " ".join(parts)
 
 
 def is_ours(folder):
@@ -202,7 +209,18 @@ def other_projects(installs, cwd):
 
 
 def describe(installs):
-    return "; ".join(s if s == "user" else f"{s} in {project}" for s, project in sorted(installs, key=str))
+    return "; ".join(s if s == "user" else f"{s} in {project or 'this folder'}"
+                     for s, project in sorted(installs, key=str))
+
+
+def delete_or_warn(copy):
+    """Delete a copy this script made; a failure leaves a note instead of failing a run that has done its job."""
+    try:
+        remove_copy(copy)
+        return True
+    except OSError as exc:
+        print(f"Could not delete {copy} ({exc}); delete that folder by hand.")
+        return False
 
 
 def find_claude():
@@ -217,7 +235,7 @@ def find_claude():
 def install(home, scope):
     cwd = Path.cwd().resolve()
     check_home(home)
-    check_project_folder(scope, cwd)
+    check_project_folder(scope, cwd, home)
     claude = find_claude()
     count = stage(home)
     print(f"Copied {count} plugin files to {home}")
@@ -234,9 +252,9 @@ def install(home, scope):
         elsewhere = other_projects(installs, cwd)
         if elsewhere:
             print("This also removes novelsmith from other projects. To get it back there, open a terminal in each "
-                  "folder and run the command shown:")
+                  "folder below and run the command under it (keep this plugin folder until you have):")
             for s, project in elsewhere:
-                print(f"    {project}:  {rerun_command(s)}")
+                print(f"  {project}\n      {rerun_command(s, home)}")
         claude.run("plugin", "marketplace", "remove", NAME)
         registered = None
     if registered is None:
@@ -246,9 +264,10 @@ def install(home, scope):
     installed = scopes_here(claude.installs(), cwd)
     for s in sorted(scopes):
         claude.run("plugin", "update" if s in installed else "install", PLUGIN_ID, "--scope", s)
-    if old_copy and old_copy != home and is_ours(old_copy):
-        remove_copy(old_copy)
-        print(f"Deleted the previous copy at {old_copy}.")
+    # The previous copy goes, unless the new one was put inside it.
+    if old_copy and old_copy != home and old_copy not in home.parents and is_ours(old_copy):
+        if delete_or_warn(old_copy):
+            print(f"Deleted the previous copy at {old_copy}.")
     where = "every project" if scope == "user" else f"the project in {cwd}"
     print(f"\nNovelsmith is installed for {where}. Open a terminal in your writing folder (the one that holds or "
           f"will hold book/), start `claude`, and run /novelsmith:doctor, then /novelsmith:novel-start.\n"
@@ -258,19 +277,19 @@ def install(home, scope):
 def uninstall(home, scope):
     cwd = Path.cwd().resolve()
     check_home(home)
-    check_project_folder(scope, cwd, uninstall=True)
+    check_project_folder(scope, cwd, home, uninstall=True)
     claude = find_claude()
     installs = claude.installs()
     if scope in scopes_here(installs, cwd):
         claude.run("plugin", "uninstall", PLUGIN_ID, "--scope", scope)
     elif installs:
-        hint = ""
-        for s, project in other_projects(installs, cwd):
-            if s == scope:
-                hint = f" To remove it there, open a terminal in {project} and run:\n    {rerun_command(s, True)}"
-                break
-        sys.exit(f"install: {PLUGIN_ID} is not installed in {scope} scope for {cwd} (it is installed: "
-                 f"{describe(installs)}); nothing was removed.{hint}")
+        where = "" if scope == "user" else f" for {cwd}"
+        ways = [f"  here\n      {rerun_command(s, home, uninstall=True)}" for s in sorted(scopes_here(installs, cwd))]
+        ways += [f"  in {project}\n      {rerun_command(s, home, uninstall=True)}"
+                 for s, project in other_projects(installs, cwd)]
+        sys.exit(f"install: {PLUGIN_ID} is not installed in {scope} scope{where}, so nothing was removed. It is "
+                 f"installed: {describe(installs)}. To uninstall one of those, run the command under it, in a "
+                 f"terminal in that folder:\n" + "\n".join(ways))
     remaining = claude.installs()
     if remaining:
         print(f"Uninstalled from {scope} scope. Still installed: {describe(remaining)}; the {NAME} marketplace "
@@ -283,8 +302,7 @@ def uninstall(home, scope):
         claude.run("plugin", "marketplace", "remove", NAME)
         removed.append(f"the {NAME} marketplace")
     for copy in sorted(copies):
-        if copy.exists() and (copy == home or is_ours(copy)):
-            remove_copy(copy)
+        if copy.exists() and (copy == home or is_ours(copy)) and delete_or_warn(copy):
             removed.append(str(copy))
     if removed or scope in scopes_here(installs, cwd):
         print(f"Removed {', '.join(removed) or 'novelsmith'}. Your book/ folders are untouched.")

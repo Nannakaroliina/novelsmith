@@ -54,8 +54,9 @@ class InFolder(unittest.TestCase):
         self.home = self.base / "plugin"
         old_cwd = os.getcwd()
         os.chdir(self.writing)
-        self.addCleanup(os.chdir, old_cwd)
+        # Cleanups run last first: leave the temp folder before deleting it (Windows cannot delete the cwd).
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(os.chdir, old_cwd)
 
     def call(self, fn, claude, *args):
         out = io.StringIO()
@@ -141,9 +142,16 @@ class InstalledCopy(unittest.TestCase):
         for cwd in (ROOT, ROOT / "scripts"):
             with self.subTest(cwd=cwd):
                 with self.assertRaises(SystemExit):
-                    install.check_project_folder("project", cwd)
-        install.check_project_folder("user", ROOT)
-        install.check_project_folder("project", self.base)
+                    install.check_project_folder("project", cwd, self.dest)
+        install.check_project_folder("user", ROOT, self.dest)
+        install.check_project_folder("project", self.base, self.dest)
+
+    def test_printed_commands_keep_a_custom_dir(self):
+        default = install.default_home().expanduser().resolve()
+        self.assertNotIn("--dir", install.rerun_command("project", default))
+        command = install.rerun_command("project", self.dest, uninstall=True)
+        self.assertIn("--uninstall --scope project", command)
+        self.assertIn(f"--dir \"{self.dest}\"", command)
 
 
 class Uninstall(InFolder):
@@ -198,6 +206,22 @@ class Uninstall(InFolder):
         out = self.uninstall(FakeClaude(), "user")
         self.assertIn("nothing to remove", out)
 
+    def test_the_wrong_scope_shows_the_command_for_this_folders_install(self):
+        claude = FakeClaude({("project", str(self.writing))}, str(self.home))
+        with self.assertRaises(SystemExit) as stop:
+            self.uninstall(claude, "user")  # forgot --scope project
+        self.assertIn("--uninstall --scope project", str(stop.exception.code))
+        self.assertEqual(claude.ran, [])
+
+    def test_another_project_keeps_the_marketplace_when_the_user_scope_goes(self):
+        claude = FakeClaude({("user", None), ("project", str(self.other))}, str(self.home))
+        out = self.uninstall(claude, "user")
+        self.assertEqual(claude.ran, [("plugin", "uninstall", install.PLUGIN_ID, "--scope", "user")])
+        self.assertIn(("project", str(self.other)), claude.installs_)
+        self.assertEqual(claude.marketplace, str(self.home))
+        self.assertTrue(install.is_ours(self.home))
+        self.assertIn(str(self.other), out)
+
 
 class Install(InFolder):
     def install(self, claude, scope="user"):
@@ -227,8 +251,33 @@ class Install(InFolder):
                                       ("plugin", "install", install.PLUGIN_ID, "--scope", "user")])
         self.assertNotIn(("project", str(self.writing)), claude.installs_)  # no project install made here
         self.assertIn(str(self.other), out)
+        self.assertIn(f"--scope project --dir \"{self.home}\"", out)  # the restore command keeps --dir
         self.assertFalse(old.exists())  # the previous marked copy is cleaned up
         self.assertTrue(install.is_ours(self.home))
+
+    def test_a_locked_previous_copy_is_reported_not_a_failure(self):
+        old = self.base / "old" / "plugin"
+        install.stage(old)
+        claude = FakeClaude({("user", None)}, str(old))
+        real_remove = install.remove_copy
+
+        def locked(folder):
+            if folder == old:
+                raise PermissionError("in use")
+            real_remove(folder)
+        with mock.patch.object(install, "remove_copy", side_effect=locked):
+            out = self.install(claude)
+        self.assertIn(f"Could not delete {old}", out)
+        self.assertIn("Novelsmith is installed", out)
+
+    def test_a_new_copy_inside_the_previous_one_is_kept(self):
+        old = self.base / "old"
+        install.stage(old)
+        self.home = old / "plugin"
+        claude = FakeClaude({("user", None)}, str(old))
+        self.install(claude)
+        self.assertTrue(install.is_ours(self.home))
+        self.assertEqual(claude.marketplace, str(self.home))
 
     def test_a_marketplace_at_a_plugin_clone_is_repointed_but_the_clone_kept(self):
         clone = self.base / "novelsmith-main"

@@ -37,7 +37,7 @@ What Cowork changes:
 
    To install it for one writing project only, open a terminal in that project's folder and run the installer by its full path: `python3 "/path/to/novelsmith/scripts/install.py" --scope project` (on Windows, `py "C:\path\to\novelsmith\scripts\install.py" --scope project`). Upgrade and uninstall it the same way, from the same folder, with the same `--scope`.
 
-   To uninstall, run the installer with `--uninstall` (for a project install, from that project's folder as above). If you deleted the plugin folder, download it again, or run `claude plugin uninstall novelsmith@novelsmith` and `claude plugin marketplace remove novelsmith`, then delete the folder named above. Your `book/` is never touched.
+   To uninstall, run the installer with `--uninstall` (for a project install, from that project's folder as above). If you deleted the plugin folder, download it again, or run `claude plugin uninstall novelsmith@novelsmith` (for a project install, add `--scope project` and run it in that project's folder) and `claude plugin marketplace remove novelsmith`, then delete the folder named above. Your `book/` is never touched.
 3. Open a terminal in the folder that holds (or will hold) your `book/`, your writing project, not the plugin folder, start `claude`, and run `/novelsmith:doctor`, then `/novelsmith:novel-start`.
 
 Or, without installing, start Claude Code with the plugin for one session: `claude --plugin-dir "/path/to/novelsmith"`.
