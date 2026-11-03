@@ -32,6 +32,11 @@ class ProjectFileChecks(unittest.TestCase):
         self.assertEqual(check.check_files(files), [])
         self.assertEqual(check.check_secrets(files), [])
 
+    def test_workflow_yaml_with_on_and_quoted_colons_passes(self):
+        workflow = ("name: CI\non:\n  push:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n"
+                    "      - run: 'pip install --only-binary=:all: -c r.txt ruff'\n")
+        self.assertEqual(check.check_files([self.file(".github/workflows/ci.yml", workflow)]), [])
+
     def test_hygiene_problems_are_named(self):
         cases = {
             "scripts/b.py": ("x = 1 \n", "trailing whitespace"),
@@ -41,6 +46,9 @@ class ProjectFileChecks(unittest.TestCase):
             "hooks/bad.json": ("{'a': 1}\n", "invalid JSON"),
             "docs/latin.md": ("caf\xe9\n".encode("latin-1"), "not UTF-8"),
             "skills/.DS_Store": (b"\0\0", "OS metadata file"),
+            # an unquoted ': ' in a run line, which GitHub refused as "a workflow file issue"
+            ".github/workflows/ci.yml": (("on:\n  push:\njobs:\n  a:\n    steps:\n      - run: pip install "
+                                          "--only-binary=:all: -c r.txt ruff\n"), "invalid YAML (line 6"),
         }
         for rel, (data, expected) in cases.items():
             with self.subTest(rel=rel):

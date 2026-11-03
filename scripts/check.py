@@ -24,7 +24,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 import build_zip  # noqa: E402
+import ns_yaml  # noqa: E402
 
+# GitHub reads a workflow's top-level `on:` as the text "on"; the strict YAML reader refuses it (PyYAML reads true).
+WORKFLOW_ON_RE = re.compile(r"(?m)^on:")
 CODE_SUFFIXES = {".py", ".json", ".toml", ".yml", ".yaml", ".sh", ".ps1"}
 # Invisible or direction-changing characters: in code they hide what a line really says.
 # Tests that need one spell it as an escape (\u200b).
@@ -110,6 +113,13 @@ def check_files(files):
                 json.loads(text)
             except ValueError as exc:
                 problems.append(f"{name}: invalid JSON ({exc})")
+        if p.suffix in (".yml", ".yaml"):
+            if name.startswith(".github/workflows/"):
+                text = WORKFLOW_ON_RE.sub('"on":', text)
+            try:
+                ns_yaml.load(text)
+            except ns_yaml.YAMLError as exc:
+                problems.append(f"{name}: invalid YAML ({exc})")
     return problems
 
 
