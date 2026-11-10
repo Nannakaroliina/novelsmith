@@ -10,3 +10,20 @@ book/
 .env.*
 *.pem
 *.key
+# other secret and credential files
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_rsa.*
+id_dsa
+id_ed25519
+credentials.json
+service-account*.json
+secrets.yml
+secrets.yaml
+.npmrc
+.netrc
+terraform.tfvars
+*.tfstate
+*.tfstate.backup
