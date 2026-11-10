@@ -140,6 +140,10 @@ A `PreToolUse` hook on every tool call (it returns at once for anything but a fi
 
 Run `/novelsmith:doctor` first and include its table. Report problems to the plugin's author (Nanna Setämaa) through the repository you got the plugin from.
 
+## Privacy
+
+novelsmith collects nothing: no server, no account, no telemetry, and no network calls of its own. Your book stays in `book/` in your project; what Claude reads there goes to Anthropic as part of your normal session. See the [Privacy Policy](PRIVACY.md).
+
 ## Roadmap
 
 - **Phase 3** — `build-context-pack.py`, `scene-drafter`, `lint-scene.sh` with per-author baseline, `extract-facts.py`, `continuity-editor`, `SessionStart` status hook.

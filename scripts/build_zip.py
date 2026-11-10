@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import ns_yaml  # noqa: E402
 
 INCLUDE_DIRS = (".claude-plugin", "agents", "assets", "hooks", "scripts", "skills", "templates")
-INCLUDE_FILES = ("README.md", "LICENSE")
+INCLUDE_FILES = ("README.md", "LICENSE", "PRIVACY.md")
 # Repository tooling, not part of what the plugin loads. The marketplace manifest is for installing
 # from this folder with scripts/install.py; it has no place in an uploaded plugin.
 EXCLUDE_FILES = {"scripts/build_zip.py", "scripts/check.py", "scripts/install.py", ".claude-plugin/marketplace.json"}

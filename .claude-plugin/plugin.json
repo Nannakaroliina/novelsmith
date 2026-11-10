@@ -7,6 +7,9 @@
   "license": "MIT",
   "icon": "./assets/novelsmith-icon-512.png",
   "keywords": ["fiction", "novel", "writing", "outline", "mystery", "nordic-noir"],
+  "homepage": "https://github.com/Nannakaroliina/novelsmith",
+  "repository": "https://github.com/Nannakaroliina/novelsmith",
+  "privacyPolicyUrl": "https://github.com/Nannakaroliina/novelsmith/blob/main/PRIVACY.md",
   "userConfig": {
     "author_name": {
       "type": "string",
